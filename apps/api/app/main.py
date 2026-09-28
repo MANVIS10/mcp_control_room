@@ -100,7 +100,7 @@ def audit(event_type: str, summary: str) -> None:
 
 async def expire_stale_approvals() -> None:
     with db() as connection:
-        stale = connection.execute("SELECT id, action_summary FROM approvals WHERE status = 'pending' AND expires_at < ?", (now(),)).fetchall()
+        stale = connection.execute("SELECT id, action_summary FROM approvals WHERE status = 'pending' AND (expires_at IS NULL OR expires_at < ?)", (now(),)).fetchall()
         for row in stale:
             connection.execute("UPDATE approvals SET status = 'expired', decided_at = ? WHERE id = ?", (now(), row["id"]))
     for row in stale:

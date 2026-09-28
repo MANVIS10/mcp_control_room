@@ -57,3 +57,10 @@ def test_codex_config_import_is_read_only(client, tmp_path):
     assert response.json()["file_name"] == "config.toml"
     assert config.read_text() == original
     assert "not persisted" not in client.get("/api/dashboard").text
+
+
+def test_approvals_from_before_the_upgrade_expire(client):
+    import app.main
+    with app.main.db() as connection:
+        connection.execute("INSERT INTO approvals (id, server_name, action_summary, risk, rationale, status, created_at) VALUES ('old', 'files', 'old request', 'delete', 'legacy', 'pending', '2020-01-01T00:00:00+00:00')")
+    assert client.get("/api/approvals/old").json()["status"] == "expired"
