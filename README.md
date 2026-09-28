@@ -30,6 +30,13 @@ The proxy sits between an AI assistant and a real MCP server. Read calls go stra
 
 Prerequisites: the API and dashboard are installed (see "Local development setup" below) and `claude` (Claude Code) is on your machine.
 
+**Before you start (first time only):** do the Python setup in "Local development setup" (create the venv and `pip install -r apps/api/requirements.txt`) first, then create your `.env` file and a sandbox folder the filesystem server is allowed to touch:
+```powershell
+Copy-Item .env.example .env
+New-Item -ItemType Directory -Force C:\Users\sonim\mcp-sandbox
+Set-Content C:\Users\sonim\mcp-sandbox\hello.txt "hello from the sandbox"
+```
+
 1. **Start the API** (terminal 1, with the venv active):
    ```powershell
    py -m uvicorn app.main:app --app-dir apps/api --reload --env-file .env
