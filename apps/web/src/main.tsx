@@ -17,6 +17,7 @@ function App() {
   const [clock, setClock] = useState(Date.now());
   const [announcement, setAnnouncement] = useState("");
   const seenApprovalIds = useRef<Set<string> | null>(null);
+  const focusApprovalId = useRef<string | null>(null);
 
   const load = useCallback(async () => {
     const response = await fetch(`${api}/api/dashboard`);
@@ -31,9 +32,7 @@ function App() {
       const text = `New approval request: ${newest.server_name} · ${newest.tool_name ?? newest.action_summary}`;
       setAnnouncement("");
       setTimeout(() => setAnnouncement(text), 50);
-      if (document.activeElement === document.body) {
-        document.querySelector<HTMLButtonElement>(`[data-approval-id="${newest.id}"] .deny`)?.focus();
-      }
+      focusApprovalId.current = newest.id;
     }
     seenApprovalIds.current = new Set(currentIds);
     setData(next);
@@ -47,6 +46,15 @@ function App() {
     liveEvents.forEach((name) => source.addEventListener(name, () => load().catch(() => undefined)));
     return () => source.close();
   }, [load]);
+
+  useEffect(() => {
+    // Runs after React has rendered the new card, so its Deny button exists.
+    const id = focusApprovalId.current;
+    focusApprovalId.current = null;
+    if (id && document.activeElement === document.body) {
+      document.querySelector<HTMLButtonElement>(`[data-approval-id="${id}"] .deny`)?.focus();
+    }
+  }, [data]);
 
   useEffect(() => {
     const timer = setInterval(() => setClock(Date.now()), 1000);
@@ -70,7 +78,7 @@ function App() {
     <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
     <section className="metrics" aria-label="Overview">
       <Metric label="Connected servers" value={data.connections.filter(c => c.status === "active").length} detail="Selected local configurations" />
-      <Metric label="Pending approvals" value={data.pending_approvals.length} detail="Nothing risky runs without you" warn={data.pending_approvals.length > 0} />
+      <Metric label="Pending approvals" value={data.pending_approvals.length} detail="Risky calls wait for a decision" warn={data.pending_approvals.length > 0} />
       <Metric label="Audit entries" value={data.events.length} detail="Redacted event history" />
     </section>
     <section className="grid">
