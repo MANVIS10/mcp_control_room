@@ -1616,12 +1616,12 @@ jobs:
   2. Add a **"How it works"** section with the picture from the top of this plan, plus a **"Try it"** section with Task 7 Steps 2–5.
   3. Change the test command in "Local development setup" to plain `py -m pytest` (run from the project root), and the API command to include `--env-file .env`.
 
-- [ ] **Step 4: Record a demo GIF** (about 30 seconds) of Task 7 Step 5 case 2. Show the AI asking to write, the card appearing with a countdown, you clicking Deny, and the AI reporting it was blocked. On Windows you can use **ShareX** (free) → Screen recording (GIF). Save it as `docs/demo.gif` and add `![demo](docs/demo.gif)` near the top of the README.
+- [ ] **Step 4: Record a demo GIF** (about 30 seconds) of Task 7 Step 5 case 2. Show the AI asking to write, the card appearing with a countdown, you clicking Deny, and the AI reporting it was blocked. On Windows you can use **ShareX** (free) → Screen recording (GIF). Save it as `assets/demo.gif` and add `![demo](assets/demo.gif)` near the top of the README.
 
 - [ ] **Step 5: Commit and push to GitHub**
 
 ```powershell
-git add .env.example README.md .github docs
+git add .env.example README.md .github assets
 git commit -m "docs: demo, setup guide and CI"
 ```
 Create an empty repo on github.com (no README), then:
