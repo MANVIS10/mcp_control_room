@@ -33,13 +33,13 @@ Prerequisites: the API and dashboard are installed (see "Local development setup
 **Before you start (first time only):** do the Python setup in "Local development setup" (create the venv and `pip install -r apps/api/requirements.txt`) first, then create your `.env` file and a sandbox folder the filesystem server is allowed to touch:
 ```powershell
 Copy-Item .env.example .env
-New-Item -ItemType Directory -Force C:\Users\sonim\mcp-sandbox
-Set-Content C:\Users\sonim\mcp-sandbox\hello.txt "hello from the sandbox"
+New-Item -ItemType Directory -Force $env:USERPROFILE\mcp-sandbox
+Set-Content $env:USERPROFILE\mcp-sandbox\hello.txt "hello from the sandbox"
 ```
 
-1. **Start the API** (terminal 1, with the venv active):
+1. **Start the API** (terminal 1):
    ```powershell
-   py -m uvicorn app.main:app --app-dir apps/api --reload --env-file .env
+   .\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir apps/api --reload --env-file .env
    ```
 2. **Start the dashboard** (terminal 2):
    ```powershell
@@ -49,7 +49,7 @@ Set-Content C:\Users\sonim\mcp-sandbox\hello.txt "hello from the sandbox"
    Open http://localhost:5173. You should see **● Live** in the top right.
 3. **Register the guarded server with Claude Code** (terminal 3). This is all one command:
    ```powershell
-   claude mcp add files-guarded -- C:\Users\sonim\mcp_control_rom\.venv\Scripts\python.exe C:\Users\sonim\mcp_control_rom\apps\proxy\control_room_proxy.py --name files -- npx.cmd -y @modelcontextprotocol/server-filesystem C:\Users\sonim\mcp-sandbox
+   claude mcp add files-guarded -- C:\Users\sonim\mcp_control_rom\.venv\Scripts\python.exe C:\Users\sonim\mcp_control_rom\apps\proxy\control_room_proxy.py --name files -- npx.cmd -y @modelcontextprotocol/server-filesystem $env:USERPROFILE\mcp-sandbox
    ```
    Everything after the first `--` is the command Claude Code will run (your proxy). Everything after the second `--` is the real server the proxy starts.
 4. **Test three cases.** Start `claude` in a new terminal and ask:
@@ -101,14 +101,15 @@ data/               local SQLite runtime state (gitignored)
 - Approvals expire; an unanswered request is blocked, not allowed (fail closed).
 - Secret redaction, so tokens and keys never reach logs, the audit trail or the SSE broadcast.
 - A live SSE dashboard with Approve/Deny, reconnect replay, and an audit trail.
-- 26 automated tests, plus CI on GitHub Actions.
+- Automated tests for the rules, redaction, API and proxy (all tests pass), plus CI on GitHub Actions.
 
 ## Known limits
 
 - Not a sandbox: an approved call still runs with the real MCP server's full permissions. Real isolation belongs in containers, not this project.
 - Risk rules are word-based, so a misleadingly named tool that also claims to be read-only could slip through. The trusted-read list exists for this reason.
 - Stdio servers only — no HTTP/SSE MCP servers yet.
-- A client may give up waiting on a slow approval before a human decides.
+- A client may give up waiting on a slow approval before a human decides. Approvals expire after 55 seconds by default so they end before typical ~60-second client timeouts, and a call the client cancelled is never run, even if approved later.
+- Any program on your computer, including the AI agent's own shell tool, can call the approval API. The Control Room does not yet authenticate the dashboard.
 
 ## Local development setup
 
@@ -117,18 +118,17 @@ Prerequisites: Python 3.11+ (with `pip`) and Node.js 20+. On this Windows machin
 ```powershell
 Copy-Item .env.example .env
 py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-py -m pip install -r apps/api/requirements.txt
-py -m uvicorn app.main:app --app-dir apps/api --reload --env-file .env
+.\.venv\Scripts\python.exe -m pip install -r apps/api/requirements.txt
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir apps/api --reload --env-file .env
 ```
 
 For API tests, install the development dependencies once:
 
 ```powershell
-py -m pip install -r apps/api/requirements-dev.txt
-py -m pytest
+.\.venv\Scripts\python.exe -m pip install -r apps/api/requirements-dev.txt
+.\.venv\Scripts\python.exe -m pytest
 ```
-Run this from the project root (not `apps/api`); `pytest.ini` points it at the right packages.
+Run this from the project root (not `apps/api`); `pytest.ini` points it at the right packages. Expected: all tests pass.
 
 In a second terminal, run the React dashboard:
 
