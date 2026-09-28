@@ -18,3 +18,9 @@ def test_long_previews_are_truncated():
 def test_key_names_match_regardless_of_separators():
     data = {"X-Api-Key": "abc123", "api.key": "def456", "Auth-Token": "ghi789"}
     assert redact(data) == {"X-Api-Key": MASK, "api.key": MASK, "Auth-Token": MASK}
+
+
+def test_secret_assignments_and_aws_keys_in_values_are_masked():
+    assert "abc123" not in preview({"note": "export API_KEY=abc123 then run"})
+    assert "hunter2" not in preview({"note": "db password: hunter2"})
+    assert "AKIAABCDEFGHIJKLMNOP" not in preview({"note": "aws id AKIAABCDEFGHIJKLMNOP"})

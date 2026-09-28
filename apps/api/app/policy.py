@@ -11,12 +11,17 @@ from typing import Any, Iterator, Literal
 Capability = Literal["read", "write", "execute", "network", "credential", "delete"]
 
 DELETE_WORDS = {"delete", "remove", "drop", "destroy", "purge", "erase", "rm", "unlink", "truncate"}
-CREDENTIAL_WORDS = {"secret", "secrets", "credential", "credentials", "token", "tokens", "password", "passwords", "auth", "login"}
+CREDENTIAL_WORDS = {
+    "secret", "secrets", "credential", "credentials", "token", "tokens", "password", "passwords", "auth", "login",
+    "key", "keys", "apikey", "env", "vault", "cookie", "cookies", "session", "sessions", "private",
+}
 EXECUTE_WORDS = {"exec", "execute", "run", "shell", "command", "eval", "spawn", "terminal", "script"}
 NETWORK_WORDS = {"fetch", "http", "request", "send", "email", "webhook", "upload", "publish", "navigate", "browse", "post"}
 WRITE_WORDS = {"write", "create", "edit", "update", "move", "rename", "set", "put", "insert", "append", "patch", "save", "commit", "push", "merge"}
 READ_WORDS = {"read", "list", "get", "search", "find", "query", "describe", "show", "view"}
 EXECUTE_ARGUMENT_KEYS = {"command", "cmd", "script", "shell"}
+NETWORK_ARGUMENT_KEYS = {"url", "uri", "endpoint", "host", "webhook"}
+URL_PATTERN = re.compile(r"https?://", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -27,7 +32,8 @@ class Decision:
 
 
 def words(tool_name: str) -> set[str]:
-    spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", tool_name)
+    spaced = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", tool_name)  # getHTTPResource -> getHTTP Resource
+    spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", spaced)  # getHTTP Resource -> get HTTP Resource
     return {word for word in re.split(r"[^a-zA-Z0-9]+", spaced.lower()) if word}
 
 
@@ -51,16 +57,18 @@ def trusted_read_tools() -> set[str]:
 def classify(server_name: str, tool_name: str, arguments: dict, annotations: dict) -> Decision:
     name_words = words(tool_name)
     argument_keys = {str(key).lower() for key in arguments}
-    has_url = any(value.lower().startswith(("http://", "https://")) for value in string_values(arguments))
+    has_url = any(URL_PATTERN.search(value) for value in string_values(arguments))
 
     # Most dangerous first. The first matching rule wins.
-    if name_words & DELETE_WORDS or annotations.get("destructiveHint") is True:
+    if name_words & DELETE_WORDS:
         return Decision("delete", True, "Deletes or destroys data.")
+    if annotations.get("destructiveHint") is True:
+        return Decision("delete", True, "Server marks this destructive (it may overwrite or delete data).")
     if name_words & CREDENTIAL_WORDS:
         return Decision("credential", True, "Touches secrets or credentials.")
     if name_words & EXECUTE_WORDS or argument_keys & EXECUTE_ARGUMENT_KEYS:
         return Decision("execute", True, "Runs a command or program.")
-    if name_words & NETWORK_WORDS or has_url:
+    if name_words & NETWORK_WORDS or has_url or argument_keys & NETWORK_ARGUMENT_KEYS:
         return Decision("network", True, "Talks to the network or an outside service.")
     if name_words & WRITE_WORDS:
         return Decision("write", True, "Changes data.")

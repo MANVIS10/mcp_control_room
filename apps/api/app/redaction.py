@@ -14,6 +14,8 @@ MAX_PREVIEW_CHARS = 300
 TOKEN_PATTERNS = [
     re.compile(r"(?i)bearer\s+[a-z0-9._\-]+"),
     re.compile(r"\b(?:sk|ghp|gho|github_pat|xox[abp])[-_][A-Za-z0-9_\-]{8,}"),
+    re.compile(r"(?i)\b[\w.-]*(key|secret|token|password|passwd|pwd)\s*[=:]\s*\S+"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
 ]
 
 

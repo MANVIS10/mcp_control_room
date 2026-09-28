@@ -64,3 +64,8 @@ def test_approvals_from_before_the_upgrade_expire(client):
     with app.main.db() as connection:
         connection.execute("INSERT INTO approvals (id, server_name, action_summary, risk, rationale, status, created_at) VALUES ('old', 'files', 'old request', 'delete', 'legacy', 'pending', '2020-01-01T00:00:00+00:00')")
     assert client.get("/api/approvals/old").json()["status"] == "expired"
+
+
+def test_requests_for_other_hosts_are_rejected(client):
+    assert client.get("/health", headers={"Host": "evil.example"}).status_code == 400
+    assert client.get("/health", headers={"Host": "localhost:8000"}).status_code == 200

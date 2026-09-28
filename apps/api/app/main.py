@@ -12,6 +12,7 @@ from typing import Any, AsyncIterator, Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -31,7 +32,7 @@ def now() -> str:
 
 
 def approval_ttl() -> timedelta:
-    return timedelta(seconds=int(os.getenv("MCP_CONTROL_APPROVAL_TTL_SECONDS", "120")))
+    return timedelta(seconds=int(os.getenv("MCP_CONTROL_APPROVAL_TTL_SECONDS", "55")))
 
 
 def db() -> sqlite3.Connection:
@@ -137,6 +138,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="MCP Control Room", version="0.2.0", lifespan=lifespan)
+# Reject requests whose Host header is not this computer (blocks DNS-rebinding pages). "testserver" is TestClient.
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "testserver"])
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
