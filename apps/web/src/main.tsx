@@ -26,8 +26,11 @@ function App() {
     const previouslySeen = seenApprovalIds.current;
     const newIds = previouslySeen ? currentIds.filter((id) => !previouslySeen.has(id)) : [];
     if (newIds.length > 0) {
-      const newest = next.pending_approvals.find((item) => item.id === newIds[newIds.length - 1])!;
-      setAnnouncement(`New approval request: ${newest.server_name} · ${newest.tool_name ?? newest.action_summary}`);
+      // The API lists pending_approvals newest first, so the first new id is the newest.
+      const newest = next.pending_approvals.find((item) => item.id === newIds[0])!;
+      const text = `New approval request: ${newest.server_name} · ${newest.tool_name ?? newest.action_summary}`;
+      setAnnouncement("");
+      setTimeout(() => setAnnouncement(text), 50);
       if (document.activeElement === document.body) {
         document.querySelector<HTMLButtonElement>(`[data-approval-id="${newest.id}"] .deny`)?.focus();
       }
