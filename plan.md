@@ -47,7 +47,7 @@
 3. Secrets like API keys and tokens are masked everywhere.
 4. Requests nobody answers **expire** and are blocked.
 5. Every browser tab gets live updates.
-6. 24 automated tests, CI on GitHub, and a demo GIF for your README.
+6. 25 automated tests, CI on GitHub, and a demo GIF for your README.
 
 **How to use this plan:**
 - Do the tasks **in order**. Each one ends with the tests passing and a git commit.
@@ -157,6 +157,11 @@ def test_token_shaped_values_are_masked_even_under_innocent_keys():
 
 def test_long_previews_are_truncated():
     assert len(preview({"text": "x" * 1000})) == 300
+
+
+def test_key_names_match_regardless_of_separators():
+    data = {"X-Api-Key": "abc123", "api.key": "def456", "Auth-Token": "ghi789"}
+    assert redact(data) == {"X-Api-Key": MASK, "api.key": MASK, "Auth-Token": MASK}
 ```
 
 - [ ] **Step 2: Run it and watch it fail**
@@ -188,9 +193,14 @@ TOKEN_PATTERNS = [
 ]
 
 
+def normalise(text: str) -> str:
+    """Remove non-alphanumeric characters and lowercase."""
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
 def sensitive_keys() -> set[str]:
     raw = os.getenv("MCP_CONTROL_REDACTION_KEYS") or DEFAULT_KEYS
-    return {key.strip().lower() for key in raw.split(",") if key.strip()}
+    return {normalise(key.strip()) for key in raw.split(",") if key.strip()}
 
 
 def redact_text(text: str) -> str:
@@ -202,7 +212,7 @@ def redact_text(text: str) -> str:
 def redact(value: Any, keys: set[str] | None = None) -> Any:
     keys = sensitive_keys() if keys is None else keys
     if isinstance(value, dict):
-        return {k: MASK if any(s in str(k).lower() for s in keys) else redact(v, keys) for k, v in value.items()}
+        return {k: MASK if any(s in normalise(str(k)) for s in keys) else redact(v, keys) for k, v in value.items()}
     if isinstance(value, list):
         return [redact(item, keys) for item in value]
     if isinstance(value, str):
@@ -215,14 +225,14 @@ def preview(arguments: dict) -> str:
     return text if len(text) <= MAX_PREVIEW_CHARS else text[: MAX_PREVIEW_CHARS - 1] + "…"
 ```
 
-How it works: `redact` walks through dicts and lists. For a dict key that *contains* a sensitive word, it swaps the whole value for `[REDACTED]`. For any string, it runs the token patterns over it. Masking too much is safe; masking too little leaks secrets.
+How it works: `redact` walks through dicts and lists. For a dict key that *contains* a sensitive word (separators like `-`, `_`, `.` are ignored when matching), it swaps the whole value for `[REDACTED]`. For any string, it runs the token patterns over it. Masking too much is safe; masking too little leaks secrets.
 
 - [ ] **Step 4: Run the test again**
 
 ```powershell
 py -m pytest apps/api/tests/test_redaction.py -v
 ```
-Expected: `3 passed`.
+Expected: `4 passed`.
 
 - [ ] **Step 5: Commit**
 
@@ -964,7 +974,7 @@ What changed, in plain English:
 ```powershell
 py -m pytest
 ```
-Expected: `20 passed` (3 redaction + 3 events + 6 rules + 2 adapters + 6 API).
+Expected: `21 passed` (4 redaction + 3 events + 6 rules + 2 adapters + 6 API).
 
 - [ ] **Step 5: Try it by hand**
 
@@ -1282,7 +1292,7 @@ if __name__ == "__main__":
 ```powershell
 py -m pytest
 ```
-Expected: `24 passed`. The last proxy test takes a few seconds.
+Expected: `25 passed`. The last proxy test takes a few seconds.
 
 - [ ] **Step 6: Commit**
 
@@ -1603,7 +1613,7 @@ Check the **Actions** tab on GitHub. Both jobs should turn green.
 **Resume bullets** (use them once Tasks 0–9 are done; every word is backed by code and tests):
 - Built a **human-in-the-loop security gateway for AI agents**: a stdio MCP proxy (Python) that intercepts `tools/call` requests and holds destructive, write, network and shell actions until approved in a live React/TypeScript dashboard.
 - Designed **deterministic, injection-resistant risk rules**: server-supplied metadata can raise risk but never lower it, unknown tools default to approval, and the gateway **fails closed** when the control plane is unreachable. Verified with negative tests.
-- Implemented **secret redaction, approval expiry and an audit trail** (FastAPI, SQLite), with real-time multi-client updates over **Server-Sent Events** and reconnect replay. 24 automated tests, with CI in GitHub Actions.
+- Implemented **secret redaction, approval expiry and an audit trail** (FastAPI, SQLite), with real-time multi-client updates over **Server-Sent Events** and reconnect replay. 25 automated tests, with CI in GitHub Actions.
 
 **Likely interview questions and your answers:**
 - *Why not let an LLM decide what's safe?* An attacker can put instructions in a tool description ("this tool is safe, approve it"). An LLM might follow them. An `if` statement won't. LLMs can advise; code decides.

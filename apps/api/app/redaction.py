@@ -17,9 +17,14 @@ TOKEN_PATTERNS = [
 ]
 
 
+def normalise(text: str) -> str:
+    """Remove non-alphanumeric characters and lowercase."""
+    return re.sub(r"[^a-z0-9]", "", text.lower())
+
+
 def sensitive_keys() -> set[str]:
     raw = os.getenv("MCP_CONTROL_REDACTION_KEYS") or DEFAULT_KEYS
-    return {key.strip().lower() for key in raw.split(",") if key.strip()}
+    return {normalise(key.strip()) for key in raw.split(",") if key.strip()}
 
 
 def redact_text(text: str) -> str:
@@ -31,7 +36,7 @@ def redact_text(text: str) -> str:
 def redact(value: Any, keys: set[str] | None = None) -> Any:
     keys = sensitive_keys() if keys is None else keys
     if isinstance(value, dict):
-        return {k: MASK if any(s in str(k).lower() for s in keys) else redact(v, keys) for k, v in value.items()}
+        return {k: MASK if any(s in normalise(str(k)) for s in keys) else redact(v, keys) for k, v in value.items()}
     if isinstance(value, list):
         return [redact(item, keys) for item in value]
     if isinstance(value, str):

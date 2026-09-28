@@ -13,3 +13,8 @@ def test_token_shaped_values_are_masked_even_under_innocent_keys():
 
 def test_long_previews_are_truncated():
     assert len(preview({"text": "x" * 1000})) == 300
+
+
+def test_key_names_match_regardless_of_separators():
+    data = {"X-Api-Key": "abc123", "api.key": "def456", "Auth-Token": "ghi789"}
+    assert redact(data) == {"X-Api-Key": MASK, "api.key": MASK, "Auth-Token": MASK}
