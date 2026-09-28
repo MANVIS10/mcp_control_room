@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,9 +26,18 @@ class ImportedConnection:
     unknown_field_names: list[str]
 
 
+def allowed_roots() -> list[Path]:
+    """Folders the importer may read from. Empty setting means your home folder only."""
+    raw = os.getenv("MCP_CONTROL_ALLOWED_CONFIG_ROOTS", "")
+    roots = [Path(item).expanduser().resolve() for item in raw.split(os.pathsep) if item.strip()]
+    return roots or [Path.home().resolve()]
+
+
 def import_config(path_value: str, source: Source) -> tuple[Path, list[ImportedConnection]]:
     """Parse a user-selected file without expanding env vars or launching a server."""
     path = Path(path_value).expanduser().resolve(strict=True)
+    if not any(path.is_relative_to(root) for root in allowed_roots()):
+        raise ConfigImportError("The selected file is outside the allowed configuration folders.")
     if not path.is_file():
         raise ConfigImportError("The selected configuration path is not a file.")
     if path.stat().st_size > MAX_CONFIG_BYTES:
