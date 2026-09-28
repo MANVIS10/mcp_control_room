@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Control Room SSE Event",
+  "type": "object",
+  "required": ["id", "type", "at", "data"],
+  "properties": {
+    "id": { "type": "string", "description": "Unique event identifier for reconnect recovery." },
+    "type": {
+      "type": "string",
+      "enum": ["connection.created", "connection.imported", "tool_call.allowed", "approval.requested", "approval.approved", "approval.denied"]
+    },
+    "at": { "type": "string", "format": "date-time" },
+    "data": { "type": "object", "description": "Sanitized event payload; no raw arguments or secrets." }
+  },
+  "additionalProperties": false
+}

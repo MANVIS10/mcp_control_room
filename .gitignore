@@ -1,0 +1,22 @@
+# Runtime and secrets
+.env
+.env.*
+!.env.example
+data/*.db
+data/*.db-*
+data/*.sqlite*
+
+# JavaScript
+node_modules/
+dist/
+coverage/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Editors / OS
+.DS_Store
+Thumbs.db
