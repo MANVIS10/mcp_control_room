@@ -6,25 +6,32 @@ import os
 import sqlite3
 import uuid
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import AsyncIterator, Literal
+from typing import Any, AsyncIterator, Literal
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.adapters import ConfigImportError, import_config
+from app.events import Broadcaster
+from app.policy import classify
+from app.redaction import preview, redact, redact_text
 
 
 DATABASE_URL = os.getenv("MCP_CONTROL_DATABASE_URL", "sqlite:///./data/mcp-control-room.db")
 DATABASE_PATH = Path(DATABASE_URL.removeprefix("sqlite:///"))
-event_queue: asyncio.Queue[dict] = asyncio.Queue(maxsize=int(os.getenv("MCP_CONTROL_EVENT_BUFFER_SIZE", "500")))
+broadcaster = Broadcaster(buffer_size=int(os.getenv("MCP_CONTROL_EVENT_BUFFER_SIZE", "500")))
 
 
 def now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def approval_ttl() -> timedelta:
+    return timedelta(seconds=int(os.getenv("MCP_CONTROL_APPROVAL_TTL_SECONDS", "120")))
 
 
 def db() -> sqlite3.Connection:
@@ -32,6 +39,13 @@ def db() -> sqlite3.Connection:
     connection = sqlite3.connect(DATABASE_PATH)
     connection.row_factory = sqlite3.Row
     return connection
+
+
+def add_missing_columns(connection: sqlite3.Connection, table: str, columns: tuple[tuple[str, str], ...]) -> None:
+    existing = {row[1] for row in connection.execute(f"PRAGMA table_info({table})")}
+    for name, definition in columns:
+        if name not in existing:
+            connection.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
 
 def initialise_database() -> None:
@@ -68,25 +82,30 @@ def initialise_database() -> None:
             );
             """
         )
-        columns = {row[1] for row in connection.execute("PRAGMA table_info(connections)")}
-        for name, definition in (("source_path", "TEXT"), ("source_modified_at", "TEXT"), ("metadata_json", "TEXT NOT NULL DEFAULT '{}'") ):
-            if name not in columns:
-                connection.execute(f"ALTER TABLE connections ADD COLUMN {name} {definition}")
+        add_missing_columns(connection, "connections", (("source_path", "TEXT"), ("source_modified_at", "TEXT"), ("metadata_json", "TEXT NOT NULL DEFAULT '{}'")))
+        add_missing_columns(connection, "approvals", (("tool_name", "TEXT"), ("arguments_preview", "TEXT"), ("expires_at", "TEXT")))
 
 
 async def publish(event_type: str, payload: dict) -> None:
-    event = {"id": str(uuid.uuid4()), "type": event_type, "at": now(), "data": payload}
-    if event_queue.full():
-        event_queue.get_nowait()
-    event_queue.put_nowait(event)
+    broadcaster.publish({"id": str(uuid.uuid4()), "type": event_type, "at": now(), "data": redact(payload)})
 
 
 def audit(event_type: str, summary: str) -> None:
     with db() as connection:
         connection.execute(
             "INSERT INTO audit_events (id, event_type, summary, created_at) VALUES (?, ?, ?, ?)",
-            (str(uuid.uuid4()), event_type, summary, now()),
+            (str(uuid.uuid4()), event_type, redact_text(summary), now()),
         )
+
+
+async def expire_stale_approvals() -> None:
+    with db() as connection:
+        stale = connection.execute("SELECT id, action_summary FROM approvals WHERE status = 'pending' AND expires_at < ?", (now(),)).fetchall()
+        for row in stale:
+            connection.execute("UPDATE approvals SET status = 'expired', decided_at = ? WHERE id = ?", (now(), row["id"]))
+    for row in stale:
+        audit("approval.expired", f"Expired without a decision: {row['action_summary']}")
+        await publish("approval.expired", {"id": row["id"], "status": "expired"})
 
 
 class ConnectionInput(BaseModel):
@@ -97,8 +116,9 @@ class ConnectionInput(BaseModel):
 
 class ToolCallInput(BaseModel):
     server_name: str = Field(min_length=1, max_length=100)
-    action_summary: str = Field(min_length=1, max_length=300)
-    capability: Literal["read", "write", "execute", "network", "credential", "delete"]
+    tool_name: str = Field(min_length=1, max_length=200)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    annotations: dict[str, Any] = Field(default_factory=dict)
 
 
 class ImportInput(BaseModel):
@@ -116,7 +136,7 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     yield
 
 
-app = FastAPI(title="MCP Control Room", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="MCP Control Room", version="0.2.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
@@ -132,7 +152,8 @@ def health() -> dict:
 
 
 @app.get("/api/dashboard")
-def dashboard() -> dict:
+async def dashboard() -> dict:
+    await expire_stale_approvals()
     with db() as connection:
         connections = [dict(row) for row in connection.execute("SELECT * FROM connections ORDER BY updated_at DESC")]
         approvals = [dict(row) for row in connection.execute("SELECT * FROM approvals WHERE status = 'pending' ORDER BY created_at DESC")]
@@ -183,35 +204,48 @@ async def import_connections(payload: ImportInput) -> dict:
 
 @app.post("/api/tool-calls")
 async def evaluate_tool_call(payload: ToolCallInput) -> dict:
-    # Deterministic enforcement; server-provided text never changes this decision.
-    requires_approval = payload.capability in {"write", "execute", "network", "credential", "delete"}
-    if not requires_approval:
-        audit("tool_call.allowed", f"Allowed read call: {payload.action_summary}")
-        await publish("tool_call.allowed", payload.model_dump())
-        return {"policy": "allowed", "reason": "Read-only capability"}
+    # Deterministic enforcement; server-provided text can raise risk but never lower it.
+    decision = classify(payload.server_name, payload.tool_name, payload.arguments, payload.annotations)
+    arguments_preview = preview(payload.arguments)
+    summary = f"{payload.server_name}.{payload.tool_name} {arguments_preview}"
+    if not decision.requires_approval:
+        audit("tool_call.allowed", f"Allowed {summary}")
+        await publish("tool_call.allowed", {"server_name": payload.server_name, "tool_name": payload.tool_name, "arguments_preview": arguments_preview, "capability": decision.capability})
+        return {"policy": "allowed", "capability": decision.capability, "reason": decision.reason}
 
     approval_id = str(uuid.uuid4())
-    timestamp = now()
-    rationale = f"{payload.capability.capitalize()} capabilities require a human decision."
+    created = datetime.now(timezone.utc)
+    expires_at = (created + approval_ttl()).isoformat()
     with db() as connection:
         connection.execute(
-            "INSERT INTO approvals VALUES (?, ?, ?, ?, ?, 'pending', ?, NULL)",
-            (approval_id, payload.server_name, payload.action_summary, payload.capability, rationale, timestamp),
+            "INSERT INTO approvals (id, server_name, tool_name, action_summary, arguments_preview, risk, rationale, status, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+            (approval_id, payload.server_name, payload.tool_name, summary, arguments_preview, decision.capability, decision.reason, created.isoformat(), expires_at),
         )
-    approval = {"id": approval_id, **payload.model_dump(), "risk": payload.capability, "rationale": rationale, "status": "pending", "created_at": timestamp}
-    audit("approval.requested", f"Approval required: {payload.action_summary}")
+    approval = {"id": approval_id, "server_name": payload.server_name, "tool_name": payload.tool_name, "action_summary": summary, "arguments_preview": arguments_preview, "risk": decision.capability, "rationale": decision.reason, "status": "pending", "created_at": created.isoformat(), "expires_at": expires_at}
+    audit("approval.requested", f"Approval required: {summary}")
     await publish("approval.requested", approval)
     return {"policy": "approval_required", "approval": approval}
 
 
+@app.get("/api/approvals/{approval_id}")
+async def get_approval(approval_id: str) -> dict:
+    await expire_stale_approvals()
+    with db() as connection:
+        row = connection.execute("SELECT id, status, expires_at FROM approvals WHERE id = ?", (approval_id,)).fetchone()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Approval not found")
+    return dict(row)
+
+
 @app.post("/api/approvals/{approval_id}")
 async def decide_approval(approval_id: str, payload: DecisionInput) -> dict:
+    await expire_stale_approvals()
     with db() as connection:
         existing = connection.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
         if existing is None:
             raise HTTPException(status_code=404, detail="Approval not found")
         if existing["status"] != "pending":
-            raise HTTPException(status_code=409, detail="Approval was already decided")
+            raise HTTPException(status_code=409, detail=f"Approval is already {existing['status']}")
         connection.execute("UPDATE approvals SET status = ?, decided_at = ? WHERE id = ?", (payload.decision, now(), approval_id))
     audit(f"approval.{payload.decision}", f"{payload.decision.capitalize()} {existing['action_summary']}")
     result = {"id": approval_id, "status": payload.decision}
@@ -220,13 +254,19 @@ async def decide_approval(approval_id: str, payload: DecisionInput) -> dict:
 
 
 @app.get("/api/events")
-async def events() -> StreamingResponse:
+async def events(request: Request) -> StreamingResponse:
+    queue = broadcaster.subscribe(request.headers.get("last-event-id"))
+
     async def stream() -> AsyncIterator[str]:
-        yield "retry: 3000\n\n"
-        while True:
-            try:
-                event = await asyncio.wait_for(event_queue.get(), timeout=15)
-                yield f"id: {event['id']}\nevent: {event['type']}\ndata: {json.dumps(event)}\n\n"
-            except asyncio.TimeoutError:
-                yield ": keepalive\n\n"
+        try:
+            yield "retry: 3000\n\n"
+            while not await request.is_disconnected():
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15)
+                    yield f"id: {event['id']}\nevent: {event['type']}\ndata: {json.dumps(event)}\n\n"
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+        finally:
+            broadcaster.unsubscribe(queue)
+
     return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
