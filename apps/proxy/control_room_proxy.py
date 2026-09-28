@@ -4,6 +4,7 @@ Sits between an MCP client (Claude Desktop, Claude Code, Codex) and a real MCP s
 Every message passes straight through, except `tools/call`: before forwarding one,
 the proxy asks the Control Room API and waits for a human decision when required.
 If the API cannot be reached, the call is blocked (fail closed).
+If the client cancels a call while it waits, the call is dropped even if it is approved later.
 """
 
 from __future__ import annotations
@@ -14,23 +15,27 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
 from typing import Any, Callable
 
 
 CheckFunction = Callable[[str, str, dict, dict], "tuple[bool, str]"]
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 class PolicyClient:
-    def __init__(self, base_url: str, timeout_seconds: float = 130.0, poll_seconds: float = 1.0) -> None:
+    def __init__(self, base_url: str, timeout_seconds: float = 60.0, poll_seconds: float = 1.0) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.poll_seconds = poll_seconds
+        # Never send tool arguments through a system or environment proxy (HTTP_PROXY etc.).
+        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def _request(self, method: str, path: str, body: dict | None = None) -> dict:
         data = json.dumps(body).encode("utf-8") if body is not None else None
         request = urllib.request.Request(self.base_url + path, data=data, method=method, headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(request, timeout=10) as response:
+        with self.opener.open(request, timeout=10) as response:
             return json.loads(response.read())
 
     def check(self, server_name: str, tool_name: str, arguments: dict, annotations: dict) -> tuple[bool, str]:
@@ -63,13 +68,20 @@ class Interceptor:
         self.check = check
         self.annotations: dict[str, dict] = {}
         self._tools_list_ids: set[Any] = set()
+        self._cancelled_ids: set[Any] = set()
         self._lock = threading.Lock()
 
-    def from_client(self, message: dict) -> tuple[str, dict]:
-        """Return ("forward", message) to send it to the server, or ("reply", response) to answer the client directly."""
+    def from_client(self, message: dict) -> tuple[str, dict | None]:
+        """Return ("forward", message) to send it to the server, ("reply", response) to answer the client directly,
+        or ("drop", None) when the client cancelled the call while it was waiting."""
         if message.get("method") == "tools/list" and "id" in message:
             with self._lock:
                 self._tools_list_ids.add(message["id"])
+        if message.get("method") == "notifications/cancelled":
+            request_id = (message.get("params") or {}).get("requestId")
+            if isinstance(request_id, (str, int)):
+                with self._lock:
+                    self._cancelled_ids.add(request_id)
         if message.get("method") != "tools/call":
             return "forward", message
 
@@ -79,6 +91,11 @@ class Interceptor:
         with self._lock:
             annotations = self.annotations.get(tool_name, {})
         allowed, reason = self.check(self.server_name, tool_name, arguments, annotations)
+        with self._lock:
+            cancelled = message.get("id") in self._cancelled_ids
+            self._cancelled_ids.discard(message.get("id"))
+        if cancelled:
+            return "drop", None  # The client already gave up, so a late approval must not run the call.
         if allowed:
             return "forward", message
         return "reply", {
@@ -103,12 +120,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Put MCP Control Room between an MCP client and a real MCP server.")
     parser.add_argument("--name", required=True, help="Server name shown in the Control Room dashboard.")
     parser.add_argument("--api", default="http://127.0.0.1:8000", help="Control Room API address.")
-    parser.add_argument("--timeout", type=float, default=130.0, help="Seconds to wait for a human decision.")
+    parser.add_argument("--allow-remote-api", action="store_true", help="Allow an --api address that is not on this computer.")
+    parser.add_argument("--timeout", type=float, default=60.0, help="Seconds to wait for a human decision.")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="The real MCP server command, after --")
     args = parser.parse_args(argv)
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if not command:
         parser.error("put the real MCP server command after --")
+    if urllib.parse.urlparse(args.api).hostname not in LOOPBACK_HOSTS and not args.allow_remote_api:
+        parser.error("--api must be on this computer (127.0.0.1, localhost or ::1); add --allow-remote-api to override")
 
     sys.stdin.reconfigure(encoding="utf-8")
     sys.stdout.reconfigure(encoding="utf-8", newline="\n")
@@ -138,7 +158,10 @@ def main(argv: list[str] | None = None) -> int:
 
     def handle(message: dict) -> None:
         action, outgoing = interceptor.from_client(message)
-        (send_to_server if action == "forward" else send_to_client)(outgoing)
+        if action == "forward":
+            send_to_server(outgoing)
+        elif action == "reply":
+            send_to_client(outgoing)
 
     pump = threading.Thread(target=pump_server_output, daemon=True)
     pump.start()
