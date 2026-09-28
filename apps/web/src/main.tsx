@@ -1,4 +1,4 @@
-import { StrictMode, useCallback, useEffect, useState } from "react";
+import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
@@ -15,11 +15,25 @@ function App() {
   const [streamState, setStreamState] = useState("Connecting");
   const [message, setMessage] = useState("");
   const [clock, setClock] = useState(Date.now());
+  const [announcement, setAnnouncement] = useState("");
+  const seenApprovalIds = useRef<Set<string> | null>(null);
 
   const load = useCallback(async () => {
     const response = await fetch(`${api}/api/dashboard`);
     if (!response.ok) throw new Error("Dashboard unavailable");
-    setData(await response.json());
+    const next: Dashboard = await response.json();
+    const currentIds = next.pending_approvals.map((item) => item.id);
+    const previouslySeen = seenApprovalIds.current;
+    const newIds = previouslySeen ? currentIds.filter((id) => !previouslySeen.has(id)) : [];
+    if (newIds.length > 0) {
+      const newest = next.pending_approvals.find((item) => item.id === newIds[newIds.length - 1])!;
+      setAnnouncement(`New approval request: ${newest.server_name} · ${newest.tool_name ?? newest.action_summary}`);
+      if (document.activeElement === document.body) {
+        document.querySelector<HTMLButtonElement>(`[data-approval-id="${newest.id}"] .deny`)?.focus();
+      }
+    }
+    seenApprovalIds.current = new Set(currentIds);
+    setData(next);
   }, []);
 
   useEffect(() => {
@@ -50,14 +64,15 @@ function App() {
   return <main>
     <header><div><p className="eyebrow">LOCAL-FIRST MCP GOVERNANCE</p><h1>Control Room</h1></div><span className={`live ${streamState === "Live" ? "connected" : ""}`}>● {streamState}</span></header>
     {message && <p className="notice" aria-live="polite">{message}</p>}
+    <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
     <section className="metrics" aria-label="Overview">
       <Metric label="Connected servers" value={data.connections.filter(c => c.status === "active").length} detail="Selected local configurations" />
       <Metric label="Pending approvals" value={data.pending_approvals.length} detail="Nothing risky runs without you" warn={data.pending_approvals.length > 0} />
       <Metric label="Audit entries" value={data.events.length} detail="Redacted event history" />
     </section>
     <section className="grid">
-      <article className="panel approvals" aria-live="polite"><div className="panel-title"><div><p className="eyebrow">HUMAN IN THE LOOP</p><h2>Approval queue</h2></div><span>{data.pending_approvals.length}</span></div>
-        {data.pending_approvals.length === 0 ? <Empty text="No actions are waiting for a decision." /> : data.pending_approvals.map(item => <div className="approval" key={item.id}>
+      <article className="panel approvals"><div className="panel-title"><div><p className="eyebrow">HUMAN IN THE LOOP</p><h2>Approval queue</h2></div><span>{data.pending_approvals.length}</span></div>
+        {data.pending_approvals.length === 0 ? <Empty text="No actions are waiting for a decision." /> : data.pending_approvals.map(item => <div className="approval" key={item.id} data-approval-id={item.id}>
           <div>
             <span className="risk">{item.risk}</span>
             <h3>{item.server_name} · {item.tool_name ?? item.action_summary}</h3>
