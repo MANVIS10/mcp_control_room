@@ -7,7 +7,7 @@
     "id": { "type": "string", "description": "Unique event identifier for reconnect recovery." },
     "type": {
       "type": "string",
-      "enum": ["connection.created", "connection.imported", "tool_call.allowed", "approval.requested", "approval.approved", "approval.denied"]
+      "enum": ["connection.created", "connection.imported", "tool_call.allowed", "approval.requested", "approval.approved", "approval.denied", "approval.expired"]
     },
     "at": { "type": "string", "format": "date-time" },
     "data": { "type": "object", "description": "Sanitized event payload; no raw arguments or secrets." }
