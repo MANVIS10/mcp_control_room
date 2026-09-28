@@ -47,7 +47,7 @@
 3. Secrets like API keys and tokens are masked everywhere.
 4. Requests nobody answers **expire** and are blocked.
 5. Every browser tab gets live updates.
-6. 25 automated tests, CI on GitHub, and a demo GIF for your README.
+6. 26 automated tests, CI on GitHub, and a demo GIF for your README.
 
 **How to use this plan:**
 - Do the tasks **in order**. Each one ends with the tests passing and a git commit.
@@ -597,7 +597,7 @@ git commit -m "feat(api): restrict config imports to allowed folders"
 
 **Why:** This connects Tasks 1–3 to the actual endpoints:
 - `POST /api/tool-calls` now receives **what the AI actually wants to do** (`tool_name`, `arguments`, server `annotations`) and decides the risk itself using `classify`. The old self-declared `capability` field is **removed**.
-- Every approval gets an **expiry time** (default 120 seconds). A request nobody answers becomes `expired` and is blocked.
+- Every approval gets an **expiry time** (default 120 seconds). A request nobody answers becomes `expired` and is blocked. Requests saved before the upgrade (with no expiry time) are treated as expired.
 - New `GET /api/approvals/{id}` lets the proxy (Task 6) check whether you've decided yet.
 - Everything saved or streamed first goes through `redact`/`preview`.
 - The SSE endpoint uses the `Broadcaster` and cleans up when a tab closes.
@@ -675,6 +675,13 @@ def test_codex_config_import_is_read_only(client, tmp_path):
     assert response.json()["file_name"] == "config.toml"
     assert config.read_text() == original
     assert "not persisted" not in client.get("/api/dashboard").text
+
+
+def test_approvals_from_before_the_upgrade_expire(client):
+    import app.main
+    with app.main.db() as connection:
+        connection.execute("INSERT INTO approvals (id, server_name, action_summary, risk, rationale, status, created_at) VALUES ('old', 'files', 'old request', 'delete', 'legacy', 'pending', '2020-01-01T00:00:00+00:00')")
+    assert client.get("/api/approvals/old").json()["status"] == "expired"
 ```
 
 The `client` fixture gives each test a fresh, empty database in a temporary folder, so tests never touch your real data.
@@ -791,7 +798,7 @@ def audit(event_type: str, summary: str) -> None:
 
 async def expire_stale_approvals() -> None:
     with db() as connection:
-        stale = connection.execute("SELECT id, action_summary FROM approvals WHERE status = 'pending' AND expires_at < ?", (now(),)).fetchall()
+        stale = connection.execute("SELECT id, action_summary FROM approvals WHERE status = 'pending' AND (expires_at IS NULL OR expires_at < ?)", (now(),)).fetchall()
         for row in stale:
             connection.execute("UPDATE approvals SET status = 'expired', decided_at = ? WHERE id = ?", (now(), row["id"]))
     for row in stale:
@@ -974,7 +981,7 @@ What changed, in plain English:
 ```powershell
 py -m pytest
 ```
-Expected: `21 passed` (4 redaction + 3 events + 6 rules + 2 adapters + 6 API).
+Expected: `22 passed` (4 redaction + 3 events + 6 rules + 2 adapters + 7 API).
 
 - [ ] **Step 5: Try it by hand**
 
@@ -1292,7 +1299,7 @@ if __name__ == "__main__":
 ```powershell
 py -m pytest
 ```
-Expected: `25 passed`. The last proxy test takes a few seconds.
+Expected: `26 passed`. The last proxy test takes a few seconds.
 
 - [ ] **Step 6: Commit**
 
@@ -1613,7 +1620,7 @@ Check the **Actions** tab on GitHub. Both jobs should turn green.
 **Resume bullets** (use them once Tasks 0–9 are done; every word is backed by code and tests):
 - Built a **human-in-the-loop security gateway for AI agents**: a stdio MCP proxy (Python) that intercepts `tools/call` requests and holds destructive, write, network and shell actions until approved in a live React/TypeScript dashboard.
 - Designed **deterministic, injection-resistant risk rules**: server-supplied metadata can raise risk but never lower it, unknown tools default to approval, and the gateway **fails closed** when the control plane is unreachable. Verified with negative tests.
-- Implemented **secret redaction, approval expiry and an audit trail** (FastAPI, SQLite), with real-time multi-client updates over **Server-Sent Events** and reconnect replay. 25 automated tests, with CI in GitHub Actions.
+- Implemented **secret redaction, approval expiry and an audit trail** (FastAPI, SQLite), with real-time multi-client updates over **Server-Sent Events** and reconnect replay. 26 automated tests, with CI in GitHub Actions.
 
 **Likely interview questions and your answers:**
 - *Why not let an LLM decide what's safe?* An attacker can put instructions in a tool description ("this tool is safe, approve it"). An LLM might follow them. An `if` statement won't. LLMs can advise; code decides.
