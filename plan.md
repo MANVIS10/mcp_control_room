@@ -72,7 +72,7 @@
 
 ### Task 0: Get set up and make the tests run from the project root
 
-**Why:** Right now `py -m pytest apps/api/tests` fails with `No module named 'app'` because pytest doesn't know where the code lives. There's also no git history yet. You need both before you change anything.
+**Why:** Right now `.\.venv\Scripts\python.exe -m pytest apps/api/tests` fails with `No module named 'app'` because pytest doesn't know where the code lives. There's also no git history yet. You need both before you change anything.
 
 **Files:**
 - Create: `pytest.ini`
@@ -112,7 +112,7 @@ New-Item -ItemType Directory -Force apps/proxy/tests
 - [ ] **Step 5: Run the tests**
 
 ```powershell
-py -m pytest
+.\.venv\Scripts\python.exe -m pytest
 ```
 Expected: `3 passed`.
 
@@ -172,7 +172,7 @@ def test_secret_assignments_and_aws_keys_in_values_are_masked():
 - [ ] **Step 2: Run it and watch it fail**
 
 ```powershell
-py -m pytest apps/api/tests/test_redaction.py -v
+.\.venv\Scripts\python.exe -m pytest apps/api/tests/test_redaction.py -v
 ```
 Expected: FAIL with `ModuleNotFoundError: No module named 'app.redaction'`. That's good: it proves the test is really checking something.
 
@@ -237,7 +237,7 @@ How it works: `redact` walks through dicts and lists. For a dict key that *conta
 - [ ] **Step 4: Run the test again**
 
 ```powershell
-py -m pytest apps/api/tests/test_redaction.py -v
+.\.venv\Scripts\python.exe -m pytest apps/api/tests/test_redaction.py -v
 ```
 Expected: `5 passed`.
 
@@ -298,7 +298,7 @@ def test_unsubscribed_client_stops_receiving():
 - [ ] **Step 2: Run it and watch it fail**
 
 ```powershell
-py -m pytest apps/api/tests/test_events.py -v
+.\.venv\Scripts\python.exe -m pytest apps/api/tests/test_events.py -v
 ```
 Expected: FAIL with `No module named 'app.events'`.
 
@@ -342,7 +342,7 @@ class Broadcaster:
 - [ ] **Step 4: Run the test again**
 
 ```powershell
-py -m pytest apps/api/tests/test_events.py -v
+.\.venv\Scripts\python.exe -m pytest apps/api/tests/test_events.py -v
 ```
 Expected: `3 passed`.
 
@@ -435,7 +435,7 @@ Look at `test_server_hints_cannot_make_a_delete_safe`. This is your **prompt-inj
 - [ ] **Step 2: Run it and watch it fail**
 
 ```powershell
-py -m pytest apps/api/tests/test_rules.py -v
+.\.venv\Scripts\python.exe -m pytest apps/api/tests/test_rules.py -v
 ```
 Expected: FAIL with `No module named 'app.policy'`.
 
@@ -526,7 +526,7 @@ def classify(server_name: str, tool_name: str, arguments: dict, annotations: dic
 - [ ] **Step 4: Run the test again**
 
 ```powershell
-py -m pytest apps/api/tests/test_rules.py -v
+.\.venv\Scripts\python.exe -m pytest apps/api/tests/test_rules.py -v
 ```
 Expected: `10 passed`.
 
@@ -576,7 +576,7 @@ def test_import_outside_allowed_folders_is_refused(tmp_path, monkeypatch):
 - [ ] **Step 2: Run it and watch it fail**
 
 ```powershell
-py -m pytest apps/api/tests/test_adapters.py -v
+.\.venv\Scripts\python.exe -m pytest apps/api/tests/test_adapters.py -v
 ```
 Expected: `test_import_outside_allowed_folders_is_refused` FAILS with `DID NOT RAISE`. The other test passes.
 
@@ -618,7 +618,7 @@ Leave the rest of the file unchanged. `resolve()` turns tricks like `..\..\` int
 - [ ] **Step 4: Run the test again**
 
 ```powershell
-py -m pytest apps/api/tests/test_adapters.py -v
+.\.venv\Scripts\python.exe -m pytest apps/api/tests/test_adapters.py -v
 ```
 Expected: `2 passed`.
 
@@ -733,7 +733,7 @@ The `client` fixture gives each test a fresh, empty database in a temporary fold
 - [ ] **Step 2: Run them and watch them fail**
 
 ```powershell
-py -m pytest apps/api/tests/test_policy.py -v
+.\.venv\Scripts\python.exe -m pytest apps/api/tests/test_policy.py -v
 ```
 Expected: several FAIL (for example `422 Unprocessable Entity`, because the old API still wants a `capability` field).
 
@@ -1026,14 +1026,14 @@ What changed, in plain English:
 - [ ] **Step 4: Run the whole test suite**
 
 ```powershell
-py -m pytest
+.\.venv\Scripts\python.exe -m pytest
 ```
 Expected: `28 passed` (5 redaction + 3 events + 10 rules + 2 adapters + 8 API).
 
 - [ ] **Step 5: Try it by hand**
 
 ```powershell
-py -m uvicorn app.main:app --app-dir apps/api --reload
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir apps/api --reload
 ```
 Open http://127.0.0.1:8000/docs. This is FastAPI's built-in test page. Open `POST /api/tool-calls`, click **Try it out** and send:
 ```json
@@ -1218,7 +1218,7 @@ def test_proxy_refuses_a_remote_api_address():
 - [ ] **Step 3: Run them and watch them fail**
 
 ```powershell
-py -m pytest apps/proxy -v
+.\.venv\Scripts\python.exe -m pytest apps/proxy -v
 ```
 Expected: FAIL with `No module named 'control_room_proxy'`.
 
@@ -1423,7 +1423,7 @@ if __name__ == "__main__":
 - [ ] **Step 5: Run all tests**
 
 ```powershell
-py -m pytest
+.\.venv\Scripts\python.exe -m pytest
 ```
 Expected: `36 passed`. The end-to-end proxy test takes a few seconds.
 
@@ -1447,10 +1447,10 @@ New-Item -ItemType Directory -Force $env:USERPROFILE\mcp-sandbox
 Set-Content $env:USERPROFILE\mcp-sandbox\hello.txt "hello from the sandbox"
 ```
 
-- [ ] **Step 2: Start the API** (terminal 1, with the venv active)
+- [ ] **Step 2: Start the API** (terminal 1; this uses the venv's own Python, so no activation is needed)
 
 ```powershell
-py -m uvicorn app.main:app --app-dir apps/api --reload
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir apps/api --reload
 ```
 
 - [ ] **Step 3: Start the dashboard** (terminal 2)
@@ -1711,7 +1711,7 @@ MCP_CONTROL_TRUSTED_READ_TOOLS=
 ```
 Then run `Copy-Item .env.example .env` (if you haven't already), and from now on start the API with `--env-file .env`, so these settings are actually loaded:
 ```powershell
-py -m uvicorn app.main:app --app-dir apps/api --reload --env-file .env
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir apps/api --reload --env-file .env
 ```
 
 - [ ] **Step 2: Create `.github/workflows/ci.yml`**
@@ -1748,7 +1748,7 @@ jobs:
 - [ ] **Step 3: Update `README.md`.** Keep the existing content and make three changes:
   1. Under the title, add a one-line pitch: *"A human-in-the-loop security gateway for AI agents: risky MCP tool calls pause until you approve them."*
   2. Add a **"How it works"** section with the picture from the top of this plan, plus a **"Try it"** section with Task 7 Steps 2–5.
-  3. Change the test command in "Local development setup" to plain `py -m pytest` (run from the project root), and the API command to include `--env-file .env`.
+  3. Change the test command in "Local development setup" to `.\.venv\Scripts\python.exe -m pytest` (run from the project root), and the API command to include `--env-file .env`.
 
 - [ ] **Step 4: Record a demo GIF** (about 30 seconds) of Task 7 Step 5 case 2. Show the AI asking to write, the card appearing with a countdown, you clicking Deny, and the AI reporting it was blocked. On Windows you can use **ShareX** (free) → Screen recording (GIF). Save it as `assets/demo.gif` and add `![demo](assets/demo.gif)` near the top of the README.
 
