@@ -86,13 +86,12 @@ git commit -m "chore: import existing prototype"
 ```
 Expected: a commit is created. `git status` shows "nothing to commit". (The `.gitignore` already keeps `.venv`, `node_modules`, `.env` and the database out.)
 
-- [ ] **Step 2: Turn on the virtual environment and install test tools**
+- [ ] **Step 2: Install test tools into the virtual environment**
 
 ```powershell
-.\.venv\Scripts\Activate.ps1
-py -m pip install -r apps/api/requirements-dev.txt
+.\.venv\Scripts\python.exe -m pip install -r apps/api/requirements-dev.txt
 ```
-Expected: your prompt starts with `(.venv)`. Do this in **every new terminal** before running Python commands.
+Expected: the install completes without errors.
 
 - [ ] **Step 3: Create `pytest.ini`** in the project root
 
