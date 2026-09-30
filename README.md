@@ -9,6 +9,25 @@ A local-first dashboard and policy gateway for Model Context Protocol servers.
 
 It inventories Codex and Claude-compatible MCP configurations, streams sanitized activity to a React dashboard, evaluates project-fit and risk, requires human approval for consequential calls, and learns only from explicit feedback.
 
+## Quick start (2 minutes)
+
+Needs Python 3.11+ and Node (only for the demo filesystem server).
+
+```
+pip install git+https://github.com/<you>/mcp-control-room
+mcp-control-room
+```
+
+It prints a dashboard link that already contains your approver token. Open it. Then, in a second terminal:
+
+```
+mcp-control-room config
+```
+
+Paste the JSON it prints into the `mcpServers` section of your Claude Desktop config (or Cursor's `mcp.json`) and restart the app. Ask the assistant to read a file in `~/mcp-sandbox` (goes straight through), then to write one (waits for your click in the dashboard).
+
+`config` creates `~/mcp-sandbox` if it does not exist and points the demo server at it only. Your data lives in `~/.mcp-control-room/`. The dashboard and API listen on 127.0.0.1 only.
+
 ## How it works
 
 ```
@@ -26,7 +45,7 @@ It inventories Codex and Claude-compatible MCP configurations, streams sanitized
 
 The proxy sits between an AI assistant and a real MCP server. Read calls go straight through. Write, delete, network and shell calls pause and wait for a human to approve or deny them in the dashboard, over live Server-Sent Events.
 
-## Try it
+## Develop from source
 
 Prerequisites: the API and dashboard are installed (see "Local development setup" below) and `claude` (Claude Code) is on your machine.
 
@@ -41,6 +60,7 @@ Set-Content $env:USERPROFILE\mcp-sandbox\hello.txt "hello from the sandbox"
    ```powershell
    .\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir apps/api --reload --env-file .env
    ```
+   On startup the API prints an approver token (or uses `MCP_CONTROL_APPROVER_TOKEN` from `.env`). Copy it: the dashboard asks for it before Approve/Deny work. The proxy never receives this token, so the AI cannot approve its own requests.
 2. **Start the dashboard** (terminal 2):
    ```powershell
    Set-Location apps/web
@@ -109,7 +129,7 @@ data/               local SQLite runtime state (gitignored)
 - Risk rules are word-based, so a misleadingly named tool that also claims to be read-only could slip through. The trusted-read list exists for this reason.
 - Stdio servers only — no HTTP/SSE MCP servers yet.
 - A client may give up waiting on a slow approval before a human decides. Approvals expire after 55 seconds by default so they end before typical ~60-second client timeouts, and a call the client cancelled is never run, even if approved later.
-- Any program on your computer, including the AI agent's own shell tool, can call the approval API. The Control Room does not yet authenticate the dashboard.
+- Approving needs the approver token, which the proxy never receives. But a program running as you that can read the token (the terminal output, `.env`, or the dashboard tab) can still approve, and submitting tool calls to the queue is not authenticated. Real isolation belongs in the OS or container boundary.
 
 ## Local development setup
 

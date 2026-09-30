@@ -7,10 +7,23 @@ type Approval = { id: string; server_name: string; tool_name: string | null; act
 type Audit = { id: string; event_type: string; summary: string; created_at: string };
 type Dashboard = { connections: Connection[]; pending_approvals: Approval[]; events: Audit[] };
 
-const api = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000";
+// Dev server talks to the API on :8000; the packaged dashboard is served by the API itself (same origin).
+const api = import.meta.env.VITE_API_BASE_URL ?? (import.meta.env.DEV ? "http://localhost:8000" : "");
 const liveEvents = ["connection.created", "connection.imported", "tool_call.allowed", "approval.requested", "approval.approved", "approval.denied", "approval.expired"];
 
+const TOKEN_KEY = "mcp-control-approver-token";
+function storedToken() {
+  try {
+    // `mcp-control-room` prints a URL like /#token=...; keep it for this tab, then remove it from the address bar.
+    const fromUrl = new URLSearchParams(location.hash.slice(1)).get("token");
+    if (fromUrl) { sessionStorage.setItem(TOKEN_KEY, fromUrl); history.replaceState(null, "", location.pathname + location.search); return fromUrl; }
+    return sessionStorage.getItem(TOKEN_KEY) ?? "";
+  } catch { return ""; }
+}
+
 function App() {
+  const [token, setToken] = useState(storedToken);
+  const [tokenDraft, setTokenDraft] = useState("");
   const [data, setData] = useState<Dashboard>({ connections: [], pending_approvals: [], events: [] });
   const [streamState, setStreamState] = useState("Connecting");
   const [message, setMessage] = useState("");
@@ -61,9 +74,22 @@ function App() {
     return () => clearInterval(timer);
   }, []);
 
+  function saveToken() {
+    const value = tokenDraft.trim();
+    if (!value) return;
+    try { sessionStorage.setItem(TOKEN_KEY, value); } catch { /* token then lasts until reload */ }
+    setToken(value); setTokenDraft(""); setMessage("Approver token saved for this browser tab.");
+  }
+
+  function forgetToken() {
+    try { sessionStorage.removeItem(TOKEN_KEY); } catch { /* nothing stored */ }
+    setToken("");
+  }
+
   async function decide(id: string, decision: "approved" | "denied") {
-    const response = await fetch(`${api}/api/approvals/${id}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision }) });
-    if (!response.ok) setMessage("That decision could not be saved. It may have expired.");
+    const response = await fetch(`${api}/api/approvals/${id}`, { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` }, body: JSON.stringify({ decision }) });
+    if (response.status === 401) { forgetToken(); setMessage("The approver token was rejected. Paste the token printed by the API."); }
+    else if (!response.ok) setMessage("That decision could not be saved. It may have expired.");
     else { setMessage(`Action ${decision}.`); }
     await load();
   }
@@ -76,6 +102,10 @@ function App() {
     <header><div><p className="eyebrow">LOCAL-FIRST MCP GOVERNANCE</p><h1>Control Room</h1></div><span className={`live ${streamState === "Live" ? "connected" : ""}`}>● {streamState}</span></header>
     {message && <p className="notice" aria-live="polite">{message}</p>}
     <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
+    {!token && <form className="token" onSubmit={e => { e.preventDefault(); saveToken(); }}>
+      <label htmlFor="approver-token">Approver token <small>(printed by the API at startup, or set as MCP_CONTROL_APPROVER_TOKEN)</small></label>
+      <div><input id="approver-token" type="password" autoComplete="off" value={tokenDraft} onChange={e => setTokenDraft(e.target.value)} /><button type="submit">Unlock approvals</button></div>
+    </form>}
     <section className="metrics" aria-label="Overview">
       <Metric label="Connected servers" value={data.connections.filter(c => c.status === "active").length} detail="Selected local configurations" />
       <Metric label="Pending approvals" value={data.pending_approvals.length} detail="Risky calls wait for a decision" warn={data.pending_approvals.length > 0} />
@@ -90,7 +120,7 @@ function App() {
             {item.arguments_preview && <code className="args">{item.arguments_preview}</code>}
             <p>{item.rationale}{secondsLeft(item.expires_at) !== null && ` · expires in ${secondsLeft(item.expires_at)}s`}</p>
           </div>
-          <div className="actions"><button className="deny" onClick={() => decide(item.id, "denied")}>Deny</button><button className="approve" onClick={() => decide(item.id, "approved")}>Approve</button></div>
+          <div className="actions"><button className="deny" disabled={!token} onClick={() => decide(item.id, "denied")}>Deny</button><button className="approve" disabled={!token} onClick={() => decide(item.id, "approved")}>Approve</button></div>
         </div>)}
       </article>
       <article className="panel"><p className="eyebrow">POLICY</p><h2>How decisions are made</h2><div className="advice">

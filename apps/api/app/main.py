@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import os
+import secrets
 import sqlite3
+import sys
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -14,12 +17,13 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from app.adapters import ConfigImportError, import_config
-from app.events import Broadcaster
-from app.policy import classify
-from app.redaction import preview, redact, redact_text
+from .adapters import ConfigImportError, import_config
+from .events import Broadcaster
+from .policy import classify
+from .redaction import preview, redact, redact_text
 
 
 DATABASE_URL = os.getenv("MCP_CONTROL_DATABASE_URL", "sqlite:///./data/mcp-control-room.db")
@@ -131,8 +135,29 @@ class DecisionInput(BaseModel):
     decision: Literal["approved", "denied"]
 
 
+MIN_TOKEN_LENGTH = 16
+
+
+def load_approver_token() -> str:
+    """The secret that proves a decision came from the person at the dashboard, not from the agent."""
+    configured = os.getenv("MCP_CONTROL_APPROVER_TOKEN", "").strip()
+    if configured:
+        if len(configured) < MIN_TOKEN_LENGTH:
+            raise RuntimeError(f"MCP_CONTROL_APPROVER_TOKEN must be at least {MIN_TOKEN_LENGTH} characters")
+        return configured
+    generated = secrets.token_urlsafe(24)
+    print(f"MCP_CONTROL_APPROVER_TOKEN not set. Generated for this run (paste into the dashboard): {generated}", file=sys.stderr, flush=True)
+    return generated
+
+
+def token_matches(header: str | None, expected: str) -> bool:
+    scheme, _, supplied = (header or "").partition(" ")
+    return scheme == "Bearer" and bool(supplied) and hmac.compare_digest(supplied.encode(), expected.encode())
+
+
 @asynccontextmanager
-async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+    application.state.approver_token = load_approver_token()
     initialise_database()
     yield
 
@@ -145,7 +170,7 @@ app.add_middleware(
     allow_origins=["http://localhost:5173"],
     allow_credentials=False,
     allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 
@@ -241,7 +266,11 @@ async def get_approval(approval_id: str) -> dict:
 
 
 @app.post("/api/approvals/{approval_id}")
-async def decide_approval(approval_id: str, payload: DecisionInput) -> dict:
+async def decide_approval(approval_id: str, payload: DecisionInput, request: Request) -> dict:
+    # Only the dashboard holds this token; the proxy (agent side) never does, so the agent cannot approve itself.
+    if not token_matches(request.headers.get("authorization"), request.app.state.approver_token):
+        audit("approval.unauthorized", f"Refused a decision on approval {approval_id[:8]} without a valid approver token")
+        raise HTTPException(status_code=401, detail="Approver token required", headers={"WWW-Authenticate": "Bearer"})
     await expire_stale_approvals()
     with db() as connection:
         existing = connection.execute("SELECT * FROM approvals WHERE id = ?", (approval_id,)).fetchone()
@@ -273,3 +302,9 @@ async def events(request: Request) -> StreamingResponse:
             broadcaster.unsubscribe(queue)
 
     return StreamingResponse(stream(), media_type="text/event-stream", headers={"Cache-Control": "no-cache"})
+
+
+# The built dashboard ships inside the package so one process serves both. Mounted last: API routes win.
+STATIC_DIR = Path(__file__).parent / "static"
+if STATIC_DIR.is_dir():
+    app.mount("/", StaticFiles(directory=STATIC_DIR, html=True), name="dashboard")
