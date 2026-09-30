@@ -47,7 +47,7 @@
 3. Secrets like API keys and tokens are masked everywhere.
 4. Requests nobody answers **expire** and are blocked.
 5. Every browser tab gets live updates.
-6. 24 automated tests, CI on GitHub, and a demo GIF for your README.
+6. 36 automated tests, CI on GitHub, and a demo GIF for your README.
 
 **How to use this plan:**
 - Do the tasks **in order**. Each one ends with the tests passing and a git commit.
@@ -72,7 +72,7 @@
 
 ### Task 0: Get set up and make the tests run from the project root
 
-**Why:** Right now `py -m pytest apps/api/tests` fails with `No module named 'app'` because pytest doesn't know where the code lives. There's also no git history yet. You need both before you change anything.
+**Why:** Right now `.\.venv\Scripts\python.exe -m pytest apps/api/tests` fails with `No module named 'app'` because pytest doesn't know where the code lives. There's also no git history yet. You need both before you change anything.
 
 **Files:**
 - Create: `pytest.ini`
@@ -86,13 +86,12 @@ git commit -m "chore: import existing prototype"
 ```
 Expected: a commit is created. `git status` shows "nothing to commit". (The `.gitignore` already keeps `.venv`, `node_modules`, `.env` and the database out.)
 
-- [ ] **Step 2: Turn on the virtual environment and install test tools**
+- [ ] **Step 2: Install test tools into the virtual environment**
 
 ```powershell
-.\.venv\Scripts\Activate.ps1
-py -m pip install -r apps/api/requirements-dev.txt
+.\.venv\Scripts\python.exe -m pip install -r apps/api/requirements-dev.txt
 ```
-Expected: your prompt starts with `(.venv)`. Do this in **every new terminal** before running Python commands.
+Expected: the install completes without errors.
 
 - [ ] **Step 3: Create `pytest.ini`** in the project root
 
@@ -113,7 +112,7 @@ New-Item -ItemType Directory -Force apps/proxy/tests
 - [ ] **Step 5: Run the tests**
 
 ```powershell
-py -m pytest
+.\.venv\Scripts\python.exe -m pytest
 ```
 Expected: `3 passed`.
 
@@ -130,7 +129,7 @@ git commit -m "test: run pytest from the project root"
 
 **Why:** The README promises "redacted" events, but no redaction code exists. `.env.example` lists `MCP_CONTROL_REDACTION_KEYS`, but nothing reads it. If an AI calls a tool with `{"api_key": "sk-..."}`, that key would be saved in plain text in SQLite. This task adds one small module that masks secrets in two ways:
 1. **By key name:** any field whose name contains `token`, `password`, `secret`, `api_key` and so on becomes `[REDACTED]`, however deeply it's nested.
-2. **By shape:** values that *look* like tokens (`Bearer ...`, `sk-...`, `ghp_...`) are masked even under an innocent key like `note`.
+2. **By shape:** values that *look* like tokens (`Bearer ...`, `sk-...`, `ghp_...`, AWS `AKIA...` key ids) or like `API_KEY=...` / `password: ...` assignments are masked even under an innocent key like `note`.
 
 **Files:**
 - Create: `apps/api/app/redaction.py`
@@ -157,12 +156,23 @@ def test_token_shaped_values_are_masked_even_under_innocent_keys():
 
 def test_long_previews_are_truncated():
     assert len(preview({"text": "x" * 1000})) == 300
+
+
+def test_key_names_match_regardless_of_separators():
+    data = {"X-Api-Key": "abc123", "api.key": "def456", "Auth-Token": "ghi789"}
+    assert redact(data) == {"X-Api-Key": MASK, "api.key": MASK, "Auth-Token": MASK}
+
+
+def test_secret_assignments_and_aws_keys_in_values_are_masked():
+    assert "abc123" not in preview({"note": "export API_KEY=abc123 then run"})
+    assert "hunter2" not in preview({"note": "db password: hunter2"})
+    assert "AKIAABCDEFGHIJKLMNOP" not in preview({"note": "aws id AKIAABCDEFGHIJKLMNOP"})
 ```
 
 - [ ] **Step 2: Run it and watch it fail**
 
 ```powershell
-py -m pytest apps/api/tests/test_redaction.py -v
+.\.venv\Scripts\python.exe -m pytest apps/api/tests/test_redaction.py -v
 ```
 Expected: FAIL with `ModuleNotFoundError: No module named 'app.redaction'`. That's good: it proves the test is really checking something.
 
@@ -185,12 +195,19 @@ MAX_PREVIEW_CHARS = 300
 TOKEN_PATTERNS = [
     re.compile(r"(?i)bearer\s+[a-z0-9._\-]+"),
     re.compile(r"\b(?:sk|ghp|gho|github_pat|xox[abp])[-_][A-Za-z0-9_\-]{8,}"),
+    re.compile(r"(?i)\b[\w.-]*(key|secret|token|password|passwd|pwd)\s*[=:]\s*\S+"),
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
 ]
+
+
+def normalise(text: str) -> str:
+    """Remove non-alphanumeric characters and lowercase."""
+    return re.sub(r"[^a-z0-9]", "", text.lower())
 
 
 def sensitive_keys() -> set[str]:
     raw = os.getenv("MCP_CONTROL_REDACTION_KEYS") or DEFAULT_KEYS
-    return {key.strip().lower() for key in raw.split(",") if key.strip()}
+    return {normalise(key.strip()) for key in raw.split(",") if key.strip()}
 
 
 def redact_text(text: str) -> str:
@@ -202,7 +219,7 @@ def redact_text(text: str) -> str:
 def redact(value: Any, keys: set[str] | None = None) -> Any:
     keys = sensitive_keys() if keys is None else keys
     if isinstance(value, dict):
-        return {k: MASK if any(s in str(k).lower() for s in keys) else redact(v, keys) for k, v in value.items()}
+        return {k: MASK if any(s in normalise(str(k)) for s in keys) else redact(v, keys) for k, v in value.items()}
     if isinstance(value, list):
         return [redact(item, keys) for item in value]
     if isinstance(value, str):
@@ -215,14 +232,14 @@ def preview(arguments: dict) -> str:
     return text if len(text) <= MAX_PREVIEW_CHARS else text[: MAX_PREVIEW_CHARS - 1] + "…"
 ```
 
-How it works: `redact` walks through dicts and lists. For a dict key that *contains* a sensitive word, it swaps the whole value for `[REDACTED]`. For any string, it runs the token patterns over it. Masking too much is safe; masking too little leaks secrets.
+How it works: `redact` walks through dicts and lists. For a dict key that *contains* a sensitive word (separators like `-`, `_`, `.` are ignored when matching), it swaps the whole value for `[REDACTED]`. For any string, it runs the token patterns over it. Masking too much is safe; masking too little leaks secrets.
 
 - [ ] **Step 4: Run the test again**
 
 ```powershell
-py -m pytest apps/api/tests/test_redaction.py -v
+.\.venv\Scripts\python.exe -m pytest apps/api/tests/test_redaction.py -v
 ```
-Expected: `3 passed`.
+Expected: `5 passed`.
 
 - [ ] **Step 5: Commit**
 
@@ -281,7 +298,7 @@ def test_unsubscribed_client_stops_receiving():
 - [ ] **Step 2: Run it and watch it fail**
 
 ```powershell
-py -m pytest apps/api/tests/test_events.py -v
+.\.venv\Scripts\python.exe -m pytest apps/api/tests/test_events.py -v
 ```
 Expected: FAIL with `No module named 'app.events'`.
 
@@ -325,7 +342,7 @@ class Broadcaster:
 - [ ] **Step 4: Run the test again**
 
 ```powershell
-py -m pytest apps/api/tests/test_events.py -v
+.\.venv\Scripts\python.exe -m pytest apps/api/tests/test_events.py -v
 ```
 Expected: `3 passed`.
 
@@ -341,8 +358,8 @@ git commit -m "feat(api): fan out live events to every dashboard tab"
 ### Task 3: Risk rules that don't trust the caller
 
 **Why:** Today the caller *tells* the API how risky a call is (`"capability": "read"`), so anything can just claim to be a read. The API must decide for itself, using plain code, from three things:
-1. **The tool name**, split into words (`deleteRepo` → `delete`, `repo`).
-2. **The arguments.** A URL means network access. A `command` argument means running a program.
+1. **The tool name**, split into words (`deleteRepo` → `delete`, `repo`; `getHTTPResource` → `get`, `http`, `resource`). Words like `key`, `env`, `vault`, `cookie` and `session` count as credentials.
+2. **The arguments.** A URL anywhere in a value, or an argument named `url`, `uri`, `endpoint`, `host` or `webhook`, means network access. A `command` argument means running a program.
 3. **The server's hints** (`readOnlyHint`, `destructiveHint`). These come from the server, so they are **untrusted**. They can make a call *more* risky, never less.
 
 The rules check the most dangerous categories first: delete → credential → execute → network → write. A call runs without approval **only** if its name reads like a read **and** the server marks it read-only, **or** you personally listed it in `MCP_CONTROL_TRUSTED_READ_TOOLS`. Anything unknown waits for a human.
@@ -357,7 +374,7 @@ The rules check the most dangerous categories first: delete → credential → e
 - [ ] **Step 1: Write the failing test.** Create `apps/api/tests/test_rules.py`:
 
 ```python
-from app.policy import classify
+from app.policy import classify, words
 
 
 def test_read_needs_both_a_read_name_and_a_read_only_hint():
@@ -376,8 +393,31 @@ def test_arguments_can_raise_risk():
     assert classify("x", "helper", {"command": "rm -rf /"}, {}).capability == "execute"
 
 
+def test_urls_anywhere_in_arguments_and_url_keys_mean_network():
+    assert classify("x", "get_document", {"source": "see https://evil.example"}, {"readOnlyHint": True}).capability == "network"
+    assert classify("x", "get_page", {"url": "evil.example"}, {"readOnlyHint": True}).capability == "network"
+
+
 def test_camel_case_names_are_split():
     assert classify("x", "deleteRepo", {}, {}).capability == "delete"
+
+
+def test_all_caps_runs_are_split():
+    assert words("getHTTPResource") == {"get", "http", "resource"}
+    assert classify("x", "getHTTPResource", {}, {"readOnlyHint": True}).capability == "network"
+
+
+def test_key_and_env_tools_count_as_credentials():
+    for tool_name in ("get_api_key", "read_env"):
+        decision = classify("x", tool_name, {}, {"readOnlyHint": True})
+        assert decision.capability == "credential"
+        assert decision.requires_approval is True
+
+
+def test_destructive_hint_alone_explains_itself():
+    decision = classify("files", "write_file", {"path": "a.txt"}, {"destructiveHint": True})
+    assert decision.capability == "delete"
+    assert decision.reason == "Server marks this destructive (it may overwrite or delete data)."
 
 
 def test_unknown_tools_require_approval():
@@ -395,7 +435,7 @@ Look at `test_server_hints_cannot_make_a_delete_safe`. This is your **prompt-inj
 - [ ] **Step 2: Run it and watch it fail**
 
 ```powershell
-py -m pytest apps/api/tests/test_rules.py -v
+.\.venv\Scripts\python.exe -m pytest apps/api/tests/test_rules.py -v
 ```
 Expected: FAIL with `No module named 'app.policy'`.
 
@@ -415,12 +455,17 @@ from typing import Any, Iterator, Literal
 Capability = Literal["read", "write", "execute", "network", "credential", "delete"]
 
 DELETE_WORDS = {"delete", "remove", "drop", "destroy", "purge", "erase", "rm", "unlink", "truncate"}
-CREDENTIAL_WORDS = {"secret", "secrets", "credential", "credentials", "token", "tokens", "password", "passwords", "auth", "login"}
+CREDENTIAL_WORDS = {
+    "secret", "secrets", "credential", "credentials", "token", "tokens", "password", "passwords", "auth", "login",
+    "key", "keys", "apikey", "env", "vault", "cookie", "cookies", "session", "sessions", "private",
+}
 EXECUTE_WORDS = {"exec", "execute", "run", "shell", "command", "eval", "spawn", "terminal", "script"}
 NETWORK_WORDS = {"fetch", "http", "request", "send", "email", "webhook", "upload", "publish", "navigate", "browse", "post"}
 WRITE_WORDS = {"write", "create", "edit", "update", "move", "rename", "set", "put", "insert", "append", "patch", "save", "commit", "push", "merge"}
 READ_WORDS = {"read", "list", "get", "search", "find", "query", "describe", "show", "view"}
 EXECUTE_ARGUMENT_KEYS = {"command", "cmd", "script", "shell"}
+NETWORK_ARGUMENT_KEYS = {"url", "uri", "endpoint", "host", "webhook"}
+URL_PATTERN = re.compile(r"https?://", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -431,7 +476,8 @@ class Decision:
 
 
 def words(tool_name: str) -> set[str]:
-    spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", tool_name)
+    spaced = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1 \2", tool_name)  # getHTTPResource -> getHTTP Resource
+    spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1 \2", spaced)  # getHTTP Resource -> get HTTP Resource
     return {word for word in re.split(r"[^a-zA-Z0-9]+", spaced.lower()) if word}
 
 
@@ -455,16 +501,18 @@ def trusted_read_tools() -> set[str]:
 def classify(server_name: str, tool_name: str, arguments: dict, annotations: dict) -> Decision:
     name_words = words(tool_name)
     argument_keys = {str(key).lower() for key in arguments}
-    has_url = any(value.lower().startswith(("http://", "https://")) for value in string_values(arguments))
+    has_url = any(URL_PATTERN.search(value) for value in string_values(arguments))
 
     # Most dangerous first. The first matching rule wins.
-    if name_words & DELETE_WORDS or annotations.get("destructiveHint") is True:
+    if name_words & DELETE_WORDS:
         return Decision("delete", True, "Deletes or destroys data.")
+    if annotations.get("destructiveHint") is True:
+        return Decision("delete", True, "Server marks this destructive (it may overwrite or delete data).")
     if name_words & CREDENTIAL_WORDS:
         return Decision("credential", True, "Touches secrets or credentials.")
     if name_words & EXECUTE_WORDS or argument_keys & EXECUTE_ARGUMENT_KEYS:
         return Decision("execute", True, "Runs a command or program.")
-    if name_words & NETWORK_WORDS or has_url:
+    if name_words & NETWORK_WORDS or has_url or argument_keys & NETWORK_ARGUMENT_KEYS:
         return Decision("network", True, "Talks to the network or an outside service.")
     if name_words & WRITE_WORDS:
         return Decision("write", True, "Changes data.")
@@ -478,9 +526,9 @@ def classify(server_name: str, tool_name: str, arguments: dict, annotations: dic
 - [ ] **Step 4: Run the test again**
 
 ```powershell
-py -m pytest apps/api/tests/test_rules.py -v
+.\.venv\Scripts\python.exe -m pytest apps/api/tests/test_rules.py -v
 ```
-Expected: `6 passed`.
+Expected: `10 passed`.
 
 - [ ] **Step 5: Commit**
 
@@ -528,7 +576,7 @@ def test_import_outside_allowed_folders_is_refused(tmp_path, monkeypatch):
 - [ ] **Step 2: Run it and watch it fail**
 
 ```powershell
-py -m pytest apps/api/tests/test_adapters.py -v
+.\.venv\Scripts\python.exe -m pytest apps/api/tests/test_adapters.py -v
 ```
 Expected: `test_import_outside_allowed_folders_is_refused` FAILS with `DID NOT RAISE`. The other test passes.
 
@@ -570,7 +618,7 @@ Leave the rest of the file unchanged. `resolve()` turns tricks like `..\..\` int
 - [ ] **Step 4: Run the test again**
 
 ```powershell
-py -m pytest apps/api/tests/test_adapters.py -v
+.\.venv\Scripts\python.exe -m pytest apps/api/tests/test_adapters.py -v
 ```
 Expected: `2 passed`.
 
@@ -587,10 +635,11 @@ git commit -m "feat(api): restrict config imports to allowed folders"
 
 **Why:** This connects Tasks 1–3 to the actual endpoints:
 - `POST /api/tool-calls` now receives **what the AI actually wants to do** (`tool_name`, `arguments`, server `annotations`) and decides the risk itself using `classify`. The old self-declared `capability` field is **removed**.
-- Every approval gets an **expiry time** (default 120 seconds). A request nobody answers becomes `expired` and is blocked.
+- Every approval gets an **expiry time** (default 55 seconds, so it ends before typical ~60-second client timeouts). A request nobody answers becomes `expired` and is blocked. Requests saved before the upgrade (with no expiry time) are treated as expired.
 - New `GET /api/approvals/{id}` lets the proxy (Task 6) check whether you've decided yet.
 - Everything saved or streamed first goes through `redact`/`preview`.
 - The SSE endpoint uses the `Broadcaster` and cleans up when a tab closes.
+- The API only answers requests addressed to `localhost` or `127.0.0.1` (`TrustedHostMiddleware`), so a web page that tricks your browser into calling it by another name is refused.
 - The database gets three new approval columns (`tool_name`, `arguments_preview`, `expires_at`). They are added automatically on start-up, so your existing `data/mcp-control-room.db` keeps working.
 
 **Files:**
@@ -665,6 +714,18 @@ def test_codex_config_import_is_read_only(client, tmp_path):
     assert response.json()["file_name"] == "config.toml"
     assert config.read_text() == original
     assert "not persisted" not in client.get("/api/dashboard").text
+
+
+def test_approvals_from_before_the_upgrade_expire(client):
+    import app.main
+    with app.main.db() as connection:
+        connection.execute("INSERT INTO approvals (id, server_name, action_summary, risk, rationale, status, created_at) VALUES ('old', 'files', 'old request', 'delete', 'legacy', 'pending', '2020-01-01T00:00:00+00:00')")
+    assert client.get("/api/approvals/old").json()["status"] == "expired"
+
+
+def test_requests_for_other_hosts_are_rejected(client):
+    assert client.get("/health", headers={"Host": "evil.example"}).status_code == 400
+    assert client.get("/health", headers={"Host": "localhost:8000"}).status_code == 200
 ```
 
 The `client` fixture gives each test a fresh, empty database in a temporary folder, so tests never touch your real data.
@@ -672,7 +733,7 @@ The `client` fixture gives each test a fresh, empty database in a temporary fold
 - [ ] **Step 2: Run them and watch them fail**
 
 ```powershell
-py -m pytest apps/api/tests/test_policy.py -v
+.\.venv\Scripts\python.exe -m pytest apps/api/tests/test_policy.py -v
 ```
 Expected: several FAIL (for example `422 Unprocessable Entity`, because the old API still wants a `capability` field).
 
@@ -693,6 +754,7 @@ from typing import Any, AsyncIterator, Literal
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -712,7 +774,7 @@ def now() -> str:
 
 
 def approval_ttl() -> timedelta:
-    return timedelta(seconds=int(os.getenv("MCP_CONTROL_APPROVAL_TTL_SECONDS", "120")))
+    return timedelta(seconds=int(os.getenv("MCP_CONTROL_APPROVAL_TTL_SECONDS", "55")))
 
 
 def db() -> sqlite3.Connection:
@@ -781,7 +843,7 @@ def audit(event_type: str, summary: str) -> None:
 
 async def expire_stale_approvals() -> None:
     with db() as connection:
-        stale = connection.execute("SELECT id, action_summary FROM approvals WHERE status = 'pending' AND expires_at < ?", (now(),)).fetchall()
+        stale = connection.execute("SELECT id, action_summary FROM approvals WHERE status = 'pending' AND (expires_at IS NULL OR expires_at < ?)", (now(),)).fetchall()
         for row in stale:
             connection.execute("UPDATE approvals SET status = 'expired', decided_at = ? WHERE id = ?", (now(), row["id"]))
     for row in stale:
@@ -818,6 +880,8 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
 
 
 app = FastAPI(title="MCP Control Room", version="0.2.0", lifespan=lifespan)
+# Reject requests whose Host header is not this computer (blocks DNS-rebinding pages). "testserver" is TestClient.
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=["localhost", "127.0.0.1", "testserver"])
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173"],
@@ -962,14 +1026,14 @@ What changed, in plain English:
 - [ ] **Step 4: Run the whole test suite**
 
 ```powershell
-py -m pytest
+.\.venv\Scripts\python.exe -m pytest
 ```
-Expected: `20 passed` (3 redaction + 3 events + 6 rules + 2 adapters + 6 API).
+Expected: `28 passed` (5 redaction + 3 events + 10 rules + 2 adapters + 8 API).
 
 - [ ] **Step 5: Try it by hand**
 
 ```powershell
-py -m uvicorn app.main:app --app-dir apps/api --reload
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir apps/api --reload
 ```
 Open http://127.0.0.1:8000/docs. This is FastAPI's built-in test page. Open `POST /api/tool-calls`, click **Try it out** and send:
 ```json
@@ -993,6 +1057,8 @@ git commit -m "feat(api): server-side classification, approval expiry and status
 - **`tools/list` replies** coming back from the server: the proxy remembers each tool's hints to send along later. They're treated as untrusted.
 - **`tools/call` requests** coming from the AI: the proxy asks the API. If the call is allowed, it forwards it. If approval is needed, it checks the API every second until you decide. If you deny it, the request expires, or the API is down, the proxy **never sends it to the server**. Instead it replies to the AI with "Blocked by MCP Control Room: …".
 - While a call waits for you, it waits on its own **thread**, so other messages keep flowing and the AI doesn't freeze.
+- If the AI gives up on a call (it sends `notifications/cancelled`), the proxy drops that call even if you approve it later.
+- It talks to the API directly, never through a system proxy (`HTTP_PROXY`), and refuses an `--api` address that isn't on your computer unless you pass `--allow-remote-api`. Tool arguments stay on your machine.
 
 It uses only the Python standard library, so there's nothing extra to install.
 
@@ -1003,7 +1069,7 @@ It uses only the Python standard library, so there's nothing extra to install.
 
 **Interfaces:**
 - Consumes: `POST /api/tool-calls` and `GET /api/approvals/{id}` from Task 5.
-- Produces: the command `python apps/proxy/control_room_proxy.py --name <server-name> [--api URL] [--timeout SECONDS] -- <real server command...>`.
+- Produces: the command `python apps/proxy/control_room_proxy.py --name <server-name> [--api URL] [--allow-remote-api] [--timeout SECONDS] -- <real server command...>`.
 
 - [ ] **Step 1: Create the fake server** `apps/proxy/tests/fake_server.py`:
 
@@ -1037,9 +1103,13 @@ for line in sys.stdin:
 import json
 import subprocess
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-from control_room_proxy import Interceptor
+import pytest
+
+from control_room_proxy import Interceptor, PolicyClient, main
 
 HERE = Path(__file__).parent
 PROXY = HERE.parent / "control_room_proxy.py"
@@ -1053,6 +1123,23 @@ def tool_call(name: str) -> dict:
 def test_allowed_call_is_forwarded():
     interceptor = Interceptor("files", lambda *_: (True, "ok"))
     assert interceptor.from_client(tool_call("read_file")) == ("forward", tool_call("read_file"))
+
+
+def test_approved_call_is_forwarded():
+    interceptor = Interceptor("files", lambda *_: (True, "Approved by a human in Control Room."))
+    assert interceptor.from_client(tool_call("delete_file")) == ("forward", tool_call("delete_file"))
+
+
+def test_cancelled_call_is_dropped_even_if_approved_later():
+    cancel = {"jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": 7}}
+
+    def check(*_):
+        # The client gives up while the human is still deciding; then the human approves.
+        assert interceptor.from_client(cancel) == ("forward", cancel)
+        return True, "Approved by a human in Control Room."
+
+    interceptor = Interceptor("files", check)
+    assert interceptor.from_client(tool_call("delete_file")) == ("drop", None)
 
 
 def test_denied_call_never_reaches_the_server():
@@ -1091,14 +1178,47 @@ def test_proxy_fails_closed_when_control_room_is_down():
     assert [tool["name"] for tool in replies[1]["result"]["tools"]] == ["read_file", "delete_file"]
     assert replies[7]["result"]["isError"] is True
     assert "unreachable" in replies[7]["result"]["content"][0]["text"]
+
+
+def test_policy_client_ignores_system_proxies(monkeypatch):
+    class Stub(BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            body = json.dumps({"policy": "allowed", "reason": "ok"}).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *_):
+            pass
+
+    for name in ("NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"):
+        monkeypatch.setenv(name, "http://127.0.0.1:9")
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Stub)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    try:
+        client = PolicyClient(f"http://127.0.0.1:{server.server_address[1]}")
+        assert client.check("files", "read_file", {"path": "a.txt"}, {}) == (True, "ok")
+    finally:
+        server.shutdown()
+        server.server_close()
+
+
+def test_proxy_refuses_a_remote_api_address():
+    with pytest.raises(SystemExit):
+        main(["--name", "files", "--api", "http://example.com", "--", sys.executable, str(FAKE_SERVER)])
 ```
 
-The last test is a real end-to-end run. It starts the proxy with the fake server, points it at an address where nothing is listening, and checks two things: `tools/list` still works, and the tool call is **blocked**. That's "fail closed", proven.
+`test_proxy_fails_closed_when_control_room_is_down` is a real end-to-end run. It starts the proxy with the fake server, points it at an address where nothing is listening, and checks two things: `tools/list` still works, and the tool call is **blocked**. That's "fail closed", proven. The last two tests check that a system proxy (`HTTP_PROXY`) is ignored, using a tiny stand-in API on a random port, and that a remote `--api` address is refused.
 
 - [ ] **Step 3: Run them and watch them fail**
 
 ```powershell
-py -m pytest apps/proxy -v
+.\.venv\Scripts\python.exe -m pytest apps/proxy -v
 ```
 Expected: FAIL with `No module named 'control_room_proxy'`.
 
@@ -1111,6 +1231,7 @@ Sits between an MCP client (Claude Desktop, Claude Code, Codex) and a real MCP s
 Every message passes straight through, except `tools/call`: before forwarding one,
 the proxy asks the Control Room API and waits for a human decision when required.
 If the API cannot be reached, the call is blocked (fail closed).
+If the client cancels a call while it waits, the call is dropped even if it is approved later.
 """
 
 from __future__ import annotations
@@ -1121,23 +1242,27 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
 from typing import Any, Callable
 
 
 CheckFunction = Callable[[str, str, dict, dict], "tuple[bool, str]"]
+LOOPBACK_HOSTS = {"127.0.0.1", "localhost", "::1"}
 
 
 class PolicyClient:
-    def __init__(self, base_url: str, timeout_seconds: float = 130.0, poll_seconds: float = 1.0) -> None:
+    def __init__(self, base_url: str, timeout_seconds: float = 60.0, poll_seconds: float = 1.0) -> None:
         self.base_url = base_url.rstrip("/")
         self.timeout_seconds = timeout_seconds
         self.poll_seconds = poll_seconds
+        # Never send tool arguments through a system or environment proxy (HTTP_PROXY etc.).
+        self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def _request(self, method: str, path: str, body: dict | None = None) -> dict:
         data = json.dumps(body).encode("utf-8") if body is not None else None
         request = urllib.request.Request(self.base_url + path, data=data, method=method, headers={"Content-Type": "application/json"})
-        with urllib.request.urlopen(request, timeout=10) as response:
+        with self.opener.open(request, timeout=10) as response:
             return json.loads(response.read())
 
     def check(self, server_name: str, tool_name: str, arguments: dict, annotations: dict) -> tuple[bool, str]:
@@ -1170,13 +1295,20 @@ class Interceptor:
         self.check = check
         self.annotations: dict[str, dict] = {}
         self._tools_list_ids: set[Any] = set()
+        self._cancelled_ids: set[Any] = set()
         self._lock = threading.Lock()
 
-    def from_client(self, message: dict) -> tuple[str, dict]:
-        """Return ("forward", message) to send it to the server, or ("reply", response) to answer the client directly."""
+    def from_client(self, message: dict) -> tuple[str, dict | None]:
+        """Return ("forward", message) to send it to the server, ("reply", response) to answer the client directly,
+        or ("drop", None) when the client cancelled the call while it was waiting."""
         if message.get("method") == "tools/list" and "id" in message:
             with self._lock:
                 self._tools_list_ids.add(message["id"])
+        if message.get("method") == "notifications/cancelled":
+            request_id = (message.get("params") or {}).get("requestId")
+            if isinstance(request_id, (str, int)):
+                with self._lock:
+                    self._cancelled_ids.add(request_id)
         if message.get("method") != "tools/call":
             return "forward", message
 
@@ -1186,6 +1318,11 @@ class Interceptor:
         with self._lock:
             annotations = self.annotations.get(tool_name, {})
         allowed, reason = self.check(self.server_name, tool_name, arguments, annotations)
+        with self._lock:
+            cancelled = message.get("id") in self._cancelled_ids
+            self._cancelled_ids.discard(message.get("id"))
+        if cancelled:
+            return "drop", None  # The client already gave up, so a late approval must not run the call.
         if allowed:
             return "forward", message
         return "reply", {
@@ -1210,12 +1347,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Put MCP Control Room between an MCP client and a real MCP server.")
     parser.add_argument("--name", required=True, help="Server name shown in the Control Room dashboard.")
     parser.add_argument("--api", default="http://127.0.0.1:8000", help="Control Room API address.")
-    parser.add_argument("--timeout", type=float, default=130.0, help="Seconds to wait for a human decision.")
+    parser.add_argument("--allow-remote-api", action="store_true", help="Allow an --api address that is not on this computer.")
+    parser.add_argument("--timeout", type=float, default=60.0, help="Seconds to wait for a human decision.")
     parser.add_argument("command", nargs=argparse.REMAINDER, help="The real MCP server command, after --")
     args = parser.parse_args(argv)
     command = args.command[1:] if args.command[:1] == ["--"] else args.command
     if not command:
         parser.error("put the real MCP server command after --")
+    if urllib.parse.urlparse(args.api).hostname not in LOOPBACK_HOSTS and not args.allow_remote_api:
+        parser.error("--api must be on this computer (127.0.0.1, localhost or ::1); add --allow-remote-api to override")
 
     sys.stdin.reconfigure(encoding="utf-8")
     sys.stdout.reconfigure(encoding="utf-8", newline="\n")
@@ -1245,7 +1385,10 @@ def main(argv: list[str] | None = None) -> int:
 
     def handle(message: dict) -> None:
         action, outgoing = interceptor.from_client(message)
-        (send_to_server if action == "forward" else send_to_client)(outgoing)
+        if action == "forward":
+            send_to_server(outgoing)
+        elif action == "reply":
+            send_to_client(outgoing)
 
     pump = threading.Thread(target=pump_server_output, daemon=True)
     pump.start()
@@ -1280,9 +1423,9 @@ if __name__ == "__main__":
 - [ ] **Step 5: Run all tests**
 
 ```powershell
-py -m pytest
+.\.venv\Scripts\python.exe -m pytest
 ```
-Expected: `24 passed`. The last proxy test takes a few seconds.
+Expected: `36 passed`. The end-to-end proxy test takes a few seconds.
 
 - [ ] **Step 6: Commit**
 
@@ -1300,14 +1443,14 @@ git commit -m "feat(proxy): stdio MCP proxy that gates tools/call on human appro
 - [ ] **Step 1: Make a sandbox folder with a throwaway file**
 
 ```powershell
-New-Item -ItemType Directory -Force C:\Users\sonim\mcp-sandbox
-Set-Content C:\Users\sonim\mcp-sandbox\hello.txt "hello from the sandbox"
+New-Item -ItemType Directory -Force $env:USERPROFILE\mcp-sandbox
+Set-Content $env:USERPROFILE\mcp-sandbox\hello.txt "hello from the sandbox"
 ```
 
-- [ ] **Step 2: Start the API** (terminal 1, with the venv active)
+- [ ] **Step 2: Start the API** (terminal 1; this uses the venv's own Python, so no activation is needed)
 
 ```powershell
-py -m uvicorn app.main:app --app-dir apps/api --reload
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir apps/api --reload
 ```
 
 - [ ] **Step 3: Start the dashboard** (terminal 2)
@@ -1321,11 +1464,11 @@ Open http://localhost:5173. You should see **● Live** in the top right.
 - [ ] **Step 4: Register the guarded server with Claude Code** (terminal 3). This is all one command:
 
 ```powershell
-claude mcp add files-guarded -- C:\Users\sonim\mcp_control_rom\.venv\Scripts\python.exe C:\Users\sonim\mcp_control_rom\apps\proxy\control_room_proxy.py --name files -- npx.cmd -y @modelcontextprotocol/server-filesystem C:\Users\sonim\mcp-sandbox
+claude mcp add files-guarded -- C:\Users\sonim\mcp_control_rom\.venv\Scripts\python.exe C:\Users\sonim\mcp_control_rom\apps\proxy\control_room_proxy.py --name files -- npx.cmd -y @modelcontextprotocol/server-filesystem $env:USERPROFILE\mcp-sandbox
 ```
 Everything after the first `--` is the command Claude Code will run (your proxy). Everything after the second `--` is the real server the proxy starts.
 
-*Using Claude Desktop instead?* Open `%APPDATA%\Claude\claude_desktop_config.json` and add:
+*Using Claude Desktop instead?* Open `%APPDATA%\Claude\claude_desktop_config.json` and add (JSON can't read `$env:USERPROFILE`, so write your real user folder here):
 ```json
 {
   "mcpServers": {
@@ -1355,7 +1498,7 @@ Then fully quit and reopen Claude Desktop.
 
 ### Task 8: Update the dashboard
 
-**Why:** The dashboard needs to show the new information: which tool, the (masked) arguments and a countdown until expiry. It also needs to react to the new `tool_call.allowed` and `approval.expired` events. The old "Judge & cost analyst" box was a placeholder for a feature that doesn't exist; it's replaced by an honest "How decisions are made" box. You'll also pin package versions, because `"latest"` means your project could break any day without you changing anything.
+**Why:** The dashboard needs to show the new information: which tool, the (masked) arguments and a countdown until expiry. It also needs to react to the new `tool_call.allowed` and `approval.expired` events. The old "Judge & cost analyst" box was a placeholder for a feature that doesn't exist; it's replaced by an honest "How decisions are made" box. You'll also pin package versions, because `"latest"` means your project could break any day without you changing anything. New requests are announced to screen readers, and keyboard focus moves to the new request's Deny button only when you're not focused on something else.
 
 **Files:**
 - Replace: `apps/web/src/main.tsx`
@@ -1366,7 +1509,7 @@ Then fully quit and reopen Claude Desktop.
 - [ ] **Step 1: Replace all of `apps/web/src/main.tsx`** with:
 
 ```tsx
-import { StrictMode, useCallback, useEffect, useState } from "react";
+import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
 
@@ -1383,11 +1526,27 @@ function App() {
   const [streamState, setStreamState] = useState("Connecting");
   const [message, setMessage] = useState("");
   const [clock, setClock] = useState(Date.now());
+  const [announcement, setAnnouncement] = useState("");
+  const seenApprovalIds = useRef<Set<string> | null>(null);
+  const focusApprovalId = useRef<string | null>(null);
 
   const load = useCallback(async () => {
     const response = await fetch(`${api}/api/dashboard`);
     if (!response.ok) throw new Error("Dashboard unavailable");
-    setData(await response.json());
+    const next: Dashboard = await response.json();
+    const currentIds = next.pending_approvals.map((item) => item.id);
+    const previouslySeen = seenApprovalIds.current;
+    const newIds = previouslySeen ? currentIds.filter((id) => !previouslySeen.has(id)) : [];
+    if (newIds.length > 0) {
+      // The API lists pending_approvals newest first, so the first new id is the newest.
+      const newest = next.pending_approvals.find((item) => item.id === newIds[0])!;
+      const text = `New approval request: ${newest.server_name} · ${newest.tool_name ?? newest.action_summary}`;
+      setAnnouncement("");
+      setTimeout(() => setAnnouncement(text), 50);
+      focusApprovalId.current = newest.id;
+    }
+    seenApprovalIds.current = new Set(currentIds);
+    setData(next);
   }, []);
 
   useEffect(() => {
@@ -1398,6 +1557,15 @@ function App() {
     liveEvents.forEach((name) => source.addEventListener(name, () => load().catch(() => undefined)));
     return () => source.close();
   }, [load]);
+
+  useEffect(() => {
+    // Runs after React has rendered the new card, so its Deny button exists.
+    const id = focusApprovalId.current;
+    focusApprovalId.current = null;
+    if (id && document.activeElement === document.body) {
+      document.querySelector<HTMLButtonElement>(`[data-approval-id="${id}"] .deny`)?.focus();
+    }
+  }, [data]);
 
   useEffect(() => {
     const timer = setInterval(() => setClock(Date.now()), 1000);
@@ -1418,14 +1586,15 @@ function App() {
   return <main>
     <header><div><p className="eyebrow">LOCAL-FIRST MCP GOVERNANCE</p><h1>Control Room</h1></div><span className={`live ${streamState === "Live" ? "connected" : ""}`}>● {streamState}</span></header>
     {message && <p className="notice" aria-live="polite">{message}</p>}
+    <p className="sr-only" role="status" aria-live="polite">{announcement}</p>
     <section className="metrics" aria-label="Overview">
       <Metric label="Connected servers" value={data.connections.filter(c => c.status === "active").length} detail="Selected local configurations" />
-      <Metric label="Pending approvals" value={data.pending_approvals.length} detail="Nothing risky runs without you" warn={data.pending_approvals.length > 0} />
+      <Metric label="Pending approvals" value={data.pending_approvals.length} detail="Risky calls wait for a decision" warn={data.pending_approvals.length > 0} />
       <Metric label="Audit entries" value={data.events.length} detail="Redacted event history" />
     </section>
     <section className="grid">
-      <article className="panel approvals" aria-live="polite"><div className="panel-title"><div><p className="eyebrow">HUMAN IN THE LOOP</p><h2>Approval queue</h2></div><span>{data.pending_approvals.length}</span></div>
-        {data.pending_approvals.length === 0 ? <Empty text="No actions are waiting for a decision." /> : data.pending_approvals.map(item => <div className="approval" key={item.id}>
+      <article className="panel approvals"><div className="panel-title"><div><p className="eyebrow">HUMAN IN THE LOOP</p><h2>Approval queue</h2></div><span>{data.pending_approvals.length}</span></div>
+        {data.pending_approvals.length === 0 ? <Empty text="No actions are waiting for a decision." /> : data.pending_approvals.map(item => <div className="approval" key={item.id} data-approval-id={item.id}>
           <div>
             <span className="risk">{item.risk}</span>
             <h3>{item.server_name} · {item.tool_name ?? item.action_summary}</h3>
@@ -1453,10 +1622,11 @@ function Empty({ text }: { text: string }) { return <p className="empty">{text}<
 createRoot(document.getElementById("root")!).render(<StrictMode><App /></StrictMode>);
 ```
 
-- [ ] **Step 2: Add this line to the end of `apps/web/src/styles.css`:**
+- [ ] **Step 2: Add these lines to the end of `apps/web/src/styles.css`:**
 
 ```css
 .args { display: block; margin: 4px 0 6px; color: #c9d6ef; font-size: .78rem; word-break: break-all; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 ```
 
 - [ ] **Step 3: Replace all of `apps/web/package.json`** with these pinned versions (they're the ones you already have installed):
@@ -1535,13 +1705,13 @@ MCP_CONTROL_ALLOWED_CONFIG_ROOTS=
 MCP_CONTROL_REDACTION_KEYS=api_key,apikey,authorization,password,secret,token
 MCP_CONTROL_EVENT_BUFFER_SIZE=500
 # Seconds before an unanswered approval expires and the call is blocked.
-MCP_CONTROL_APPROVAL_TTL_SECONDS=120
+MCP_CONTROL_APPROVAL_TTL_SECONDS=55
 # server:tool pairs you trust as read-only, comma separated. Example: files:read_text_file,files:list_directory
 MCP_CONTROL_TRUSTED_READ_TOOLS=
 ```
 Then run `Copy-Item .env.example .env` (if you haven't already), and from now on start the API with `--env-file .env`, so these settings are actually loaded:
 ```powershell
-py -m uvicorn app.main:app --app-dir apps/api --reload --env-file .env
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --app-dir apps/api --reload --env-file .env
 ```
 
 - [ ] **Step 2: Create `.github/workflows/ci.yml`**
@@ -1578,14 +1748,14 @@ jobs:
 - [ ] **Step 3: Update `README.md`.** Keep the existing content and make three changes:
   1. Under the title, add a one-line pitch: *"A human-in-the-loop security gateway for AI agents: risky MCP tool calls pause until you approve them."*
   2. Add a **"How it works"** section with the picture from the top of this plan, plus a **"Try it"** section with Task 7 Steps 2–5.
-  3. Change the test command in "Local development setup" to plain `py -m pytest` (run from the project root), and the API command to include `--env-file .env`.
+  3. Change the test command in "Local development setup" to `.\.venv\Scripts\python.exe -m pytest` (run from the project root), and the API command to include `--env-file .env`.
 
-- [ ] **Step 4: Record a demo GIF** (about 30 seconds) of Task 7 Step 5 case 2. Show the AI asking to write, the card appearing with a countdown, you clicking Deny, and the AI reporting it was blocked. On Windows you can use **ShareX** (free) → Screen recording (GIF). Save it as `docs/demo.gif` and add `![demo](docs/demo.gif)` near the top of the README.
+- [ ] **Step 4: Record a demo GIF** (about 30 seconds) of Task 7 Step 5 case 2. Show the AI asking to write, the card appearing with a countdown, you clicking Deny, and the AI reporting it was blocked. On Windows you can use **ShareX** (free) → Screen recording (GIF). Save it as `assets/demo.gif` and add `![demo](assets/demo.gif)` near the top of the README.
 
 - [ ] **Step 5: Commit and push to GitHub**
 
 ```powershell
-git add .env.example README.md .github docs
+git add .env.example README.md .github assets
 git commit -m "docs: demo, setup guide and CI"
 ```
 Create an empty repo on github.com (no README), then:
@@ -1603,7 +1773,7 @@ Check the **Actions** tab on GitHub. Both jobs should turn green.
 **Resume bullets** (use them once Tasks 0–9 are done; every word is backed by code and tests):
 - Built a **human-in-the-loop security gateway for AI agents**: a stdio MCP proxy (Python) that intercepts `tools/call` requests and holds destructive, write, network and shell actions until approved in a live React/TypeScript dashboard.
 - Designed **deterministic, injection-resistant risk rules**: server-supplied metadata can raise risk but never lower it, unknown tools default to approval, and the gateway **fails closed** when the control plane is unreachable. Verified with negative tests.
-- Implemented **secret redaction, approval expiry and an audit trail** (FastAPI, SQLite), with real-time multi-client updates over **Server-Sent Events** and reconnect replay. 24 automated tests, with CI in GitHub Actions.
+- Implemented **secret redaction, approval expiry and an audit trail** (FastAPI, SQLite), with real-time multi-client updates over **Server-Sent Events** and reconnect replay. 36 automated tests, with CI in GitHub Actions.
 
 **Likely interview questions and your answers:**
 - *Why not let an LLM decide what's safe?* An attacker can put instructions in a tool description ("this tool is safe, approve it"). An LLM might follow them. An `if` statement won't. LLMs can advise; code decides.

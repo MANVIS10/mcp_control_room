@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mcp-control-room"
+version = "0.2.0"
+description = "Local-first human-in-the-loop approval gateway for MCP tool calls."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["fastapi>=0.116,<1", "uvicorn[standard]>=0.35,<1", "pydantic>=2.11,<3"]
+
+[project.scripts]
+mcp-control-room = "control_room_api.cli:main"
+mcp-control-room-proxy = "control_room_proxy:main"
+
+[tool.setuptools]
+py-modules = ["control_room_proxy"]
+packages = ["control_room_api"]
+
+[tool.setuptools.package-dir]
+"" = "apps/proxy"
+control_room_api = "apps/api/app"
+
+[tool.setuptools.package-data]
+control_room_api = ["static/**/*"]
